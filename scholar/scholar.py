@@ -96,6 +96,7 @@ class Scholar(object):
         PC,
         TC,
         DR,
+        TE,
         eta_bn_prop=1.0,
         l1_beta=None,
         l1_beta_c=None,
@@ -108,6 +109,7 @@ class Scholar(object):
         :param PC: np.array of prior covariates influencing the document-topic prior [batch size x n_prior_covars]
         :param TC: np.array of topic covariates to be associated with topical deviations [batch size x n_topic_covars]
         :param DR: np.array of document representations [batch size x doc_dim]
+        :param TE: np.array of teacher eta [batch size x vocab size]
         :param l1_beta: np.array of prior variances on the topic weights
         :param l1_beta_c: np.array of prior variances on the weights for topic covariates
         :param l1_beta_ci: np.array of prior variances on the weights for topic-covariate interactions
@@ -123,15 +125,18 @@ class Scholar(object):
             TC = torch.Tensor(TC).to(self.device)
         if DR is not None:
             DR = torch.Tensor(DR).to(self.device)
+        if TE is not None:
+            TE = torch.Tensor(TE).to(self.device)
         self.optimizer.zero_grad()
 
         # do a forward pass
-        thetas, X_recon, Y_probs, losses = self._model(
+        eta, thetas, X_recon, Y_probs, losses = self._model(
             X,
             Y,
             PC,
             TC,
             DR,
+            TE,
             eta_bn_prop=eta_bn_prop,
             l1_beta=l1_beta,
             l1_beta_c=l1_beta_c,
@@ -145,6 +150,7 @@ class Scholar(object):
         if Y_probs is not None:
             Y_probs = Y_probs.to("cpu").detach().numpy()
         return (
+            eta.to("cpu").detach().numpy(),
             loss.to("cpu").detach().numpy(),
             Y_probs,
             thetas.to("cpu").detach().numpy(),
@@ -152,7 +158,7 @@ class Scholar(object):
             kld.to("cpu").detach().numpy(),
         )
 
-    def predict(self, X, PC, TC, DR, eta_bn_prop=0.0):
+    def predict(self, X, PC, TC, DR, TE, eta_bn_prop=0.0):
         """
         Predict labels for a minibatch of data
         """
@@ -169,12 +175,14 @@ class Scholar(object):
             TC = torch.Tensor(TC).to(self.device)
         if DR is not None:
             DR = torch.Tensor(DR).to(self.device)
-        theta, _, Y_recon, _ = self._model(
-            X, Y, PC, TC, DR, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
+        if TE is not None:
+            TE = torch.Tensor(TE).to(self.device)
+        _, theta, _, Y_recon, _ = self._model(
+            X, Y, PC, TC, DR, TE, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
         )
         return theta, Y_recon.to("cpu").detach().numpy()
 
-    def predict_from_topics(self, theta, PC, TC, DR, eta_bn_prop=0.0):
+    def predict_from_topics(self, theta, PC, TC, DR, TE, eta_bn_prop=0.0):
         """
         Predict label probabilities from each topic
         """
@@ -185,10 +193,12 @@ class Scholar(object):
             TC = torch.Tensor(TC)
         if DR is not None:
             DR = torch.Tensor(DR)
-        probs = self._model.predict_from_theta(theta, PC, TC, DR)
+        if TE is not None:
+            TE = torch.Tensor(TE)   
+        probs = self._model.predict_from_theta(theta, PC, TC, DR, TE)
         return probs.to("cpu").detach().numpy()
 
-    def get_losses(self, X, Y, PC, TC, DR, eta_bn_prop=0.0, n_samples=0):
+    def get_losses(self, X, Y, PC, TC, DR, TE, eta_bn_prop=0.0, n_samples=0):
         """
         Compute and return the loss values for all instances in X, Y, PC, and TC averaged over multiple samples
         """
@@ -203,6 +213,8 @@ class Scholar(object):
             TC = np.expand_dims(TC, axis=0)
         if DR is not None and batch_size == 1:
             DR = np.expand_dims(DR, axis=0)
+        if TE is not None and batch_size == 1:
+            TE = np.expand_dims(TE, axis=0)
         X = torch.Tensor(X).to(self.device)
         if Y is not None:
             Y = torch.Tensor(Y).to(self.device)
@@ -212,25 +224,28 @@ class Scholar(object):
             TC = torch.Tensor(TC).to(self.device)
         if DR is not None:
             DR = torch.Tensor(DR).to(self.device)
+        if TE is not None:
+            TE = torch.Tensor(TE).to(self.device)
         if n_samples == 0:
-            _, _, _, temp = self._model(
-                X, Y, PC, TC, DR, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
+            _, _, _, _, temp = self._model(
+                X, Y, PC, TC, DR, TE, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
             )
             loss, NL, KLD = temp
             losses = loss.to("cpu").detach().numpy()
         else:
-            _, _, _, temp = self._model(
-                X, Y, PC, TC, DR, do_average=False, var_scale=1.0, eta_bn_prop=eta_bn_prop
+            _, _, _, _, temp = self._model(
+                X, Y, PC, TC, DR, TE, do_average=False, var_scale=1.0, eta_bn_prop=eta_bn_prop
             )
             loss, NL, KLD = temp
             losses = loss.to("cpu").detach().numpy()
             for s in range(1, n_samples):
-                _, _, _, temp = self._model(
+                _, _, _, _, temp = self._model(
                     X,
                     Y,
                     PC,
                     TC,
                     DR,
+                    TE,
                     do_average=False,
                     var_scale=1.0,
                     eta_bn_prop=eta_bn_prop,
@@ -241,7 +256,7 @@ class Scholar(object):
 
         return losses
 
-    def compute_theta(self, X, Y, PC, TC, DR, eta_bn_prop=0.0):
+    def compute_theta(self, X, Y, PC, TC, DR, TE, eta_bn_prop=0.0):
         """
         Return the latent document representation (mean of posterior of theta) for a given batch of X, Y, PC, and TC
         """
@@ -256,6 +271,8 @@ class Scholar(object):
             TC = np.expand_dims(TC, axis=0)
         if DR is not None and batch_size == 1:
             DR = np.expand_dims(DR, axis=0)
+        if TE is not None and batch_size == 1:
+            TE = np.expand_dims(TE, axis=0)
 
         X = torch.Tensor(X).to(self.device)
         if Y is not None:
@@ -266,11 +283,49 @@ class Scholar(object):
             TC = torch.Tensor(TC).to(self.device)
         if DR is not None:
             DR = torch.Tensor(DR).to(self.device)
-        theta, _, _, _ = self._model(
-            X, Y, PC, TC, DR, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
+        if TE is not None:
+            TE = torch.Tensor(TE).to(self.device)
+        _, theta, _, _, _ = self._model(
+            X, Y, PC, TC, DR, TE, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
         )
 
         return theta.to("cpu").detach().numpy()
+
+
+    def compute_eta(self, X, Y, PC, TC, DR, TE, eta_bn_prop=0.0):
+        """
+        Return the latent document representation (mean of posterior of eta) for a given batch of X, Y, PC, and TC
+        """
+        batch_size = self.get_batch_size(X)
+        if batch_size == 1:
+            X = np.expand_dims(X, axis=0)
+        if Y is not None and batch_size == 1:
+            Y = np.expand_dims(Y, axis=0)
+        if PC is not None and batch_size == 1:
+            PC = np.expand_dims(PC, axis=0)
+        if TC is not None and batch_size == 1:
+            TC = np.expand_dims(TC, axis=0)
+        if DR is not None and batch_size == 1:
+            DR = np.expand_dims(DR, axis=0)
+        if TE is not None and batch_size == 1:
+            TE = np.expand_dims(TE, axis=0)
+
+        X = torch.Tensor(X).to(self.device)
+        if Y is not None:
+            Y = torch.Tensor(Y).to(self.device)
+        if PC is not None:
+            PC = torch.Tensor(PC).to(self.device)
+        if TC is not None:
+            TC = torch.Tensor(TC).to(self.device)
+        if DR is not None:
+            DR = torch.Tensor(DR).to(self.device)
+        if TE is not None:
+            TE = torch.Tensor(TE).to(self.device)
+        eta, _, _, _, _ = self._model(
+            X, Y, PC, TC, DR, TE, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
+        )
+
+        return eta.to("cpu").detach().numpy()
 
     def get_weights(self):
         """
@@ -351,8 +406,11 @@ class torchScholar(nn.Module):
         self.zero_out_embeddings = config["zero_out_embeddings"]        
         self.reconstruct_bow = config["reconstruct_bow"]
         self.doc_reps_dim = config["doc_reps_dim"]
+        self.teacher_eta_dim = config["teacher_eta_dim"]
+        self.use_teacher_eta_layer = config["use_teacher_eta_layer"]
         self.attend_over_doc_reps = config["attend_over_doc_reps"]
         self.use_doc_layer = config["use_doc_layer"]
+        self.use_pseudo_doc = config["use_pseudo_doc"]
         self.doc_reconstruction_weight = config["doc_reconstruction_weight"]
         self.doc_reconstruction_temp = config["doc_reconstruction_temp"]
         self.doc_reconstruction_min_count = config["doc_reconstruction_min_count"]
@@ -407,6 +465,14 @@ class torchScholar(nn.Module):
                 emb_size += self.doc_reps_dim
             if self.classify_from_doc_reps:
                 classifier_input_dim += self.doc_reps_dim
+        if self.teacher_eta_dim is not None:
+            if self.use_teacher_eta_layer:
+                emb_size += self.words_emb_dim
+                self.teacher_eta_layer = nn.Linear(
+                    self.teacher_eta_dim, self.words_emb_dim
+                ).to(self.device)
+            else:
+                emb_size +=self.teacher_eta_dim
         if self.n_labels > 0:
             emb_size += self.n_labels
 
@@ -512,6 +578,7 @@ class torchScholar(nn.Module):
         PC,
         TC,
         DR,
+        TE,
         compute_loss=True,
         do_average=True,
         eta_bn_prop=1.0,
@@ -527,6 +594,7 @@ class torchScholar(nn.Module):
         :param PC: np.array of covariates influencing the prior [batch_size x n_prior_covars]
         :param TC: np.array of covariates with explicit topic deviations [batch_size x n_topic_covariates]
         :param DR: np.array of document representations [batch_size x doc_reps_dim]
+        :param TE: np.array of teacher eta [batch_size x teacher_eta_dim (vocab_size)]
         :param compute_loss: if True, compute and return the loss
         :param do_average: if True, average the loss over the minibatch
         :param eta_bn_prop: (float) a weight between 0 and 1 to interpolate between using and not using the final batchnorm layer
@@ -572,6 +640,15 @@ class torchScholar(nn.Module):
                 dr_out = F.softplus(self.doc_layer(dr_out))
             
             encoder_parts.append(dr_out)
+        if self.teacher_eta_dim is not None:
+            te_out = TE
+            if self.use_pseudo_doc:
+                t = self.doc_reconstruction_temp
+                TE = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+                te_out = TE
+            if self.use_teacher_eta_layer:
+                te_out = F.softplus(self.teacher_eta_layer(TE))
+            encoder_parts.append(te_out)
         if self.n_labels > 0:
             encoder_parts.append(Y)
 
@@ -607,7 +684,6 @@ class torchScholar(nn.Module):
         # combine latent representation with topics and background
         # beta layer here includes both the topic weights and the background term (as a bias)
         eta = self.beta_layer(theta)
-
         # add deviations for covariates (and interactions)
         if self.n_topic_covars > 0:
             eta = eta + self.beta_c_layer(TC)
@@ -683,6 +759,7 @@ class torchScholar(nn.Module):
 
         if compute_loss:
             return (
+                eta,
                 theta,
                 X_recon,
                 Y_recon,
@@ -690,6 +767,7 @@ class torchScholar(nn.Module):
                     X,
                     Y,
                     DR,
+                    TE,
                     X_recon,
                     Y_recon,
                     X_soft_recon,
@@ -704,13 +782,14 @@ class torchScholar(nn.Module):
                 ),
             )
         else:
-            return theta, X_recon, Y_recon
+            return eta, theta, X_recon, Y_recon
 
     def _loss(
         self,
         X,
         Y,
         DR,
+        TE,
         X_recon,
         Y_recon,
         X_soft_recon,
@@ -734,15 +813,22 @@ class torchScholar(nn.Module):
             alpha = self.doc_reconstruction_weight
             t = self.doc_reconstruction_temp
             
-            X_soft = torch.softmax(DR / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
-            X_soft = X_soft * (X_soft > self.doc_reconstruction_min_count).float()
+            # Using BERT-based Autoencoder as the Teacher model (BAT)
+            if DR is not None:
+                X_soft = torch.softmax(DR / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+                X_soft = X_soft * (X_soft > self.doc_reconstruction_min_count).float()
+
+            # Using the pretrained eta as the Teacher model
+            elif TE is not None:
+                X_soft = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+
 
             kd_loss = (alpha * t * t) * -(X_soft * (X_soft_recon + 1e-10).log()).sum(1)
             standard_loss = (1 - alpha) * -(X * (X_recon + 1e-10).log()).sum(1)
 
             # overwrite the NL loss (more of a safeguard than anything)
             NL = kd_loss + standard_loss
-        
+
         # compute label loss
         if self.n_labels > 0:
             NL += -(Y * (Y_recon + 1e-10).log()).sum(1) * self.classifier_loss_weight
@@ -798,7 +884,7 @@ class torchScholar(nn.Module):
         else:
             return loss, NL, KLD
 
-    def predict_from_theta(self, theta, PC, TC, DR):
+    def predict_from_theta(self, theta, PC, TC, DR, TE):
         # Predict labels from a distribution over topics
         Y_recon = None
         if self.n_labels > 0:
