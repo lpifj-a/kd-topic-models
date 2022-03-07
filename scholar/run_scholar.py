@@ -12,6 +12,7 @@ from tqdm import tqdm
 import file_handling as fh
 from scholar import Scholar
 from compute_npmi import compute_npmi_at_n_during_training
+import datetime
 
 
 def main(call=None):
@@ -254,6 +255,12 @@ def main(call=None):
         default=False,
         help="Experimental switch to set all embeddings to 0",
     )
+    parser.add_argument(
+        "--embeddings",
+        action="store_true",
+        default=False,
+        help="Experimental switch to set all embeddings to 0",
+    )
 
     parser.add_argument(
         "--doc-reps-dir",
@@ -335,6 +342,39 @@ def main(call=None):
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Random seed"
+    )
+    parser.add_argument(
+        "--save-eta",
+        action="store_true",
+        dest="save_eta",
+        default=False,
+        help="Save the eta in SCHOLAR",
+    )
+    parser.add_argument(
+        "--teacher-eta-dir",
+        dest="teacher_eta_dir",
+        type=str,
+        default=None,
+        help="load the teacher eta",
+    )
+    parser.add_argument(
+        "--use-teacher-eta-layer",
+        action="store_true",
+        default=False,
+        help="Use a teacher eta layer",
+    )
+    parser.add_argument(
+        "--use-pseudo-doc",
+        action="store_true",
+        default=False,
+        help="Use a pseudo documents instead of logits",
+    )
+    parser.add_argument(
+        "--save-for-each-epoch",
+        type=int,
+        dest="save_for_each_epoch",
+        default=None,
+        help="Save models for a certain number of epochs",
     )
 
     options = parser.parse_args(call)
@@ -437,6 +477,14 @@ def main(call=None):
     doc_reps_dim = train_doc_reps.shape[-1] if options.doc_reps_dir else None
     n_train, _ = train_X.shape
 
+    # load the teacher eta
+    print("Loading the teacher eta")
+
+
+    train_teacher_eta = load_teacher_eta(options.teacher_eta_dir, prefix=options.train_prefix, row_selector=train_row_selector)
+    teacher_eta_dim = train_teacher_eta.shape[-1] if options.teacher_eta_dir else None
+
+
     # load the dev data
     if options.dev_prefix is not None:
         dev_X, _, dev_row_selector, dev_ids = load_word_counts(
@@ -469,7 +517,16 @@ def main(call=None):
         except FileNotFoundError:
             print("Dev document representation not found, will set to log of dev_X")
             dev_doc_reps = np.log(np.array(dev_X.todense()) + 1e-10) # HACK
-    
+
+        # load dev teacher eta
+        try:
+            dev_teacher_eta = load_teacher_eta(options.teacher_eta_dir, prefix=options.dev_prefix,row_selector=dev_row_selector)
+        except:
+            print("Dev teacher eta not found, will set to log of dev_X")
+            dev_teacher_eta = np.log(np.array(dev_X.todense()) + 1e-10) # HACK
+    else:
+        dev_teacher_eta = None
+
     # load the test data
     test_ids = None
     if options.test_prefix is not None:
@@ -508,6 +565,7 @@ def main(call=None):
         test_prior_covars = None
         test_topic_covars = None
         test_doc_reps = None
+        test_teacher_eta = None
 
 
     # collect label data for the deviations
@@ -553,6 +611,7 @@ def main(call=None):
         n_prior_covars=n_prior_covars,
         n_topic_covars=n_topic_covars,
         doc_reps_dim=doc_reps_dim,
+        teacher_eta_dim=teacher_eta_dim,
     )
 
     print("Network architecture:")
@@ -563,13 +622,18 @@ def main(call=None):
     embeddings = {}
     if options.background_embeddings:
         fpath = None if options.background_embeddings == 'random' else options.background_embeddings
-        embeddings['background'] = load_word_vectors(
-            fpath=fpath, # if None, they are randomly initialized
-            emb_dim=options.emb_dim,
-            update_embeddings=options.update_background_embeddings,
-            rng=rng,
-            vocab=vocab,
-        )
+        if fpath!=None and fpath.endswith('.npy'):
+            print('Loading embeddings')
+            emb_data = np.load(fpath)
+            embeddings['background'] = (emb_data, options.update_background_embeddings) 
+        else:
+            embeddings['background'] = load_word_vectors(
+                fpath=fpath, # if None, they are randomly initialized
+                emb_dim=options.emb_dim,
+                update_embeddings=options.update_background_embeddings,
+                rng=rng,
+                vocab=vocab,
+            )
     if options.deviation_embeddings:
         fpath = None if options.deviation_embeddings == 'random' else options.deviation_embeddings
         for name in deviation_covar_names:
@@ -626,6 +690,7 @@ def main(call=None):
             PC=train_prior_covars,
             TC=train_topic_covars,
             DR=train_doc_reps,
+            TE=train_teacher_eta,
             vocab=vocab,
             prior_covar_names=prior_covar_names,
             topic_covar_names=topic_covar_names,
@@ -640,6 +705,7 @@ def main(call=None):
             PC_dev=dev_prior_covars,
             TC_dev=dev_topic_covars,
             DR_dev=dev_doc_reps,
+            TE_dev=dev_teacher_eta,
         )
 
     # load best model
@@ -662,6 +728,7 @@ def main(call=None):
             dev_prior_covars,
             dev_topic_covars,
             dev_doc_reps,
+            dev_teacher_eta,
             options.batch_size,
             eta_bn_prop=0.0,
         )
@@ -678,6 +745,7 @@ def main(call=None):
             test_prior_covars,
             test_topic_covars,
             test_doc_reps,
+            test_teacher_eta,
             options.batch_size,
             eta_bn_prop=0.0,
         )
@@ -696,6 +764,7 @@ def main(call=None):
             train_prior_covars,
             train_topic_covars,
             train_doc_reps,
+            train_teacher_eta,
             options.output_dir,
             subset="train",
         )
@@ -708,6 +777,7 @@ def main(call=None):
                 dev_prior_covars,
                 dev_topic_covars,
                 dev_doc_reps,
+                dev_teacher_eta,
                 options.output_dir,
                 subset="dev",
             )
@@ -720,6 +790,7 @@ def main(call=None):
                 test_prior_covars,
                 test_topic_covars,
                 test_doc_reps,
+                test_teacher_eta,
                 options.output_dir,
                 subset="test",
             )
@@ -743,6 +814,7 @@ def main(call=None):
         train_prior_covars,
         train_topic_covars,
         train_doc_reps,
+        train_teacher_eta,
         train_ids,
         options.output_dir,
         "train",
@@ -757,6 +829,7 @@ def main(call=None):
             dev_prior_covars,
             dev_topic_covars,
             dev_doc_reps,
+            dev_teacher_eta,
             dev_ids,
             options.output_dir,
             "dev",
@@ -771,11 +844,60 @@ def main(call=None):
             test_prior_covars,
             test_topic_covars,
             test_doc_reps,
+            test_teacher_eta,
             test_ids,
             options.output_dir,
             "test",
             batch_size=options.batch_size,
         )
+    
+    # save the eta in SCHOLAR 
+    if options.save_eta :
+        print('Saving the eta in SCHOLAR')
+        save_etas(
+            model,
+            train_X,
+            train_labels,
+            train_prior_covars,
+            train_topic_covars,
+            train_doc_reps,
+            train_teacher_eta,
+            train_ids,
+            options.output_dir,
+            "train",
+            batch_size=options.batch_size,
+        )
+
+        if dev_X is not None:
+            save_etas(
+                model,
+                dev_X,
+                dev_labels,
+                dev_prior_covars,
+                dev_topic_covars,
+                dev_doc_reps,
+                dev_teacher_eta,
+                dev_ids,
+                options.output_dir,
+                "dev",
+                batch_size=options.batch_size,
+            )
+        
+        if n_test > 0:
+            save_etas(
+                model,
+                test_X,
+                test_labels,
+                test_prior_covars,
+                test_topic_covars,
+                test_doc_reps,
+                test_teacher_eta,
+                test_ids,
+                options.output_dir,
+                "test",
+                batch_size=options.batch_size,
+            )
+        
 
 
 def load_word_counts(input_dir, input_prefix, vocab=None):
@@ -906,6 +1028,14 @@ def load_doc_reps(input_dir, prefix, row_selector, use_sequences=False):
         doc_reps = np.insert(doc_reps, [0], mask, axis=2)
         return doc_reps[row_selector, :]
 
+def load_teacher_eta(input_dir, prefix, row_selector):
+    # Load teacher eta, an [num_docs x vocab_size] matrix
+    if input_dir is not None:
+        teacher_eta_fpath = os.path.join(input_dir, f"eta.{prefix}.npy")
+        teacher_eta = np.load(teacher_eta_fpath)
+        print(teacher_eta.shape)
+        return teacher_eta[row_selector, :]
+
 def train_dev_split(options, rng):
     # randomly split into train and dev
     if options.dev_folds > 0:
@@ -923,7 +1053,6 @@ def train_dev_split(options, rng):
 
     else:
         return None, None
-
 
 def split_matrix(train_X, train_indices, dev_indices):
     # split a matrix (word counts, labels, or covariates), into train and dev
@@ -986,6 +1115,7 @@ def make_network(
     options,
     vocab_size,
     doc_reps_dim=None,
+    teacher_eta_dim=None,
     label_type=None,
     n_labels=0,
     n_prior_covars=0,
@@ -997,8 +1127,11 @@ def make_network(
         zero_out_embeddings=options.zero_out_embeddings,
         reconstruct_bow=options.reconstruct_bow,
         doc_reps_dim=doc_reps_dim,
+        teacher_eta_dim=teacher_eta_dim,
+        use_teacher_eta_layer=options.use_teacher_eta_layer,
         attend_over_doc_reps=options.attend_over_doc_reps,
         use_doc_layer=options.use_doc_layer,
+        use_pseudo_doc=options.use_pseudo_doc,
         doc_reconstruction_weight=options.doc_reconstruction_weight,
         doc_reconstruction_temp=options.doc_reconstruction_temp,
         doc_reconstruction_min_count=options.doc_reconstruction_min_count,
@@ -1028,6 +1161,7 @@ def train(
     PC,
     TC,
     DR,
+    TE,
     vocab,
     prior_covar_names,
     topic_covar_names,
@@ -1041,6 +1175,7 @@ def train(
     PC_dev=None,
     TC_dev=None,
     DR_dev=None,
+    TE_dev=None,
     bn_anneal=True,
     init_eta_bn_prop=1.0,
     eta_bn_anneal_step_const=0.75,
@@ -1049,7 +1184,7 @@ def train(
 ):
     # Train the model
     n_train, vocab_size = X.shape
-    mb_gen = create_minibatch(X, Y, PC, TC, DR, batch_size=batch_size, rng=rng)
+    mb_gen = create_minibatch(X, Y, PC, TC, DR, TE, batch_size=batch_size, rng=rng)
     total_batch = int(n_train / batch_size)
     batches = 0
 
@@ -1105,16 +1240,17 @@ def train(
         avg_nl = 0.0
         avg_kld = 0.0
         # Loop over all batches
-        for i in tqdm(range(total_batch), disable=True):
+        for i in tqdm(range(total_batch)):
             # get a minibatch
-            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs = next(mb_gen)
+            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = next(mb_gen)
             # do one minibatch update
-            cost, recon_y, thetas, nl, kld = model.fit(
+            eta, cost, recon_y, thetas, nl, kld = model.fit(
                 batch_xs,
                 batch_ys,
                 batch_pcs,
                 batch_tcs,
                 batch_drs,
+                batch_tes,
                 eta_bn_prop=eta_bn_prop,
                 l1_beta=l1_beta,
                 l1_beta_c=l1_beta_c,
@@ -1180,6 +1316,12 @@ def train(
                 )
             else:
                 print("Epoch:", "%d" % epoch, "cost=", "{:.9f}".format(avg_cost))
+                sys.stdout.flush()
+
+            # ある epoch ごとに model を保存
+            if options.save_for_each_epoch is not None :
+                if epoch % options.save_for_each_epoch == 0 :
+                    save_scholar_model(options, model, epoch, best_dev_metrics)
 
             if X_dev is not None:
                 # switch to eval mode for intermediate evaluation
@@ -1194,6 +1336,7 @@ def train(
                     PC_dev,
                     TC_dev,
                     DR_dev,
+                    TE_dev,
                     batch_size,
                     eta_bn_prop=eta_bn_prop,
                 )
@@ -1213,25 +1356,40 @@ def train(
                     epoch_metrics["accuracy"] = dev_accuracy
 
                 # NPMI
-                dev_npmi = compute_npmi_at_n_during_training(
+                dev_npmi, npmi_for_each_topic = compute_npmi_at_n_during_training(
                     model.get_weights(), ref_counts=X_dev.tocsc(), n=options.npmi_words, smoothing=0.,
                 )
                 epoch_metrics["npmi"] = dev_npmi
 
+                # topic diversity
+                topic_diversity = get_topic_diversity(model.get_weights(), 25)
+                # epoch_metrics["topic_diversity"] = topic_diversity
+
                 print(
                     f"Dev perplexity = {dev_perplexity:0.4f}; "
                     f"Dev accuracy = {dev_accuracy:0.4f}; "
-                    f"Dev NPMI = {dev_npmi:0.4f}"
+                    f"Dev NPMI = {dev_npmi:0.4f}; "
+                    f"Topic diversity = {topic_diversity:0.4f}; "
                 )
+                sys.stdout.flush()
 
                 best_dev_metrics = update_metrics(epoch_metrics, best_dev_metrics, epoch)
                 if best_dev_metrics[dev_metric]["epoch"] == epoch:
                     num_epochs_no_improvement = 0
+                    print("Saving the model")
+                    print("epoch:",epoch)
+                    print("Dev NPMI:",best_dev_metrics[dev_metric]["value"] )
                     save_scholar_model(options, model, epoch, best_dev_metrics)
+                    best_npmi_for_each_topic = pd.Series(npmi_for_each_topic)
                 else:
                     num_epochs_no_improvement += 1
                 if patience is not None and num_epochs_no_improvement >= patience:
                     print(f"Ran out of patience ({patience} epochs), returning model")
+                    print("Saving NPMI for each topic")
+                    print(best_npmi_for_each_topic)
+                    os.makedirs(options.output_dir+"/npmi_for_each_topic", exist_ok=True)
+                    dt_now = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S{}').format('')
+                    best_npmi_for_each_topic.to_csv(options.output_dir+"/npmi_for_each_topic/"+dt_now + ".csv")
                     return model
                 # switch back to training mode
                 model.train()
@@ -1248,7 +1406,20 @@ def train(
     return model
 
 
-def create_minibatch(X, Y, PC, TC, DR, batch_size=200, rng=None):
+# https://github.com/adjidieng/ETM/blob/master/utils.py
+def get_topic_diversity(beta, topk):
+    num_topics = beta.shape[0]
+    list_w = np.zeros((num_topics, topk))
+    for k in range(num_topics):
+        idx = beta[k,:].argsort()[-topk:][::-1]
+        list_w[k,:] = idx
+    n_unique = len(np.unique(list_w))
+    TD = n_unique / (topk * num_topics)
+    return TD
+
+
+
+def create_minibatch(X, Y, PC, TC, DR, TE, batch_size=200, rng=None):
     # Yield a random minibatch
     while True:
         # Return random data samples of a size 'minibatch_size' at each iteration
@@ -1279,11 +1450,16 @@ def create_minibatch(X, Y, PC, TC, DR, batch_size=200, rng=None):
         else:
             DR_mb = None
 
+        if TE is not None:
+            TE_mb = TE[ixs, :].astype("float32")
+        else:
+            TE_mb = None
 
-        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb
+
+        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb
 
 
-def get_minibatch(X, Y, PC, TC, DR, batch, batch_size=200):
+def get_minibatch(X, Y, PC, TC, DR, TE, batch, batch_size=200):
     # Get a particular non-random segment of the data
     n_items, _ = X.shape
     n_batches = int(np.ceil(n_items / float(batch_size)))
@@ -1313,9 +1489,14 @@ def get_minibatch(X, Y, PC, TC, DR, batch, batch_size=200):
     if DR is not None:
        DR_mb = DR[ixs, :].astype("float32")
     else:
-        DR_mb = None    
+        DR_mb = None  
 
-    return X_mb, Y_mb, PC_mb, TC_mb, DR_mb
+    if TE is not None:
+       TE_mb = TE[ixs, :].astype("float32")
+    else:
+        TE_mb = None  
+
+    return X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb
 
 
 def update_metrics(current, best=None, epoch=None):
@@ -1324,7 +1505,7 @@ def update_metrics(current, best=None, epoch=None):
     """
     if best is None:
         best = {
-            "perplexity": {"value": np.inf},
+            "perplexity": {"value": np.inf, "epoch": 0},
             "accuracy": {"value": -np.inf},
             "npmi": {"value": -np.inf},
         }
@@ -1341,7 +1522,7 @@ def update_metrics(current, best=None, epoch=None):
     return best
 
 
-def predict_label_probs(model, X, PC, TC, DR, batch_size=200, eta_bn_prop=0.0):
+def predict_label_probs(model, X, PC, TC, DR, TE, batch_size=200, eta_bn_prop=0.0):
     # Predict a probability distribution over labels for each instance using the classifier part of the network
 
     n_items, _ = X.shape
@@ -1350,11 +1531,11 @@ def predict_label_probs(model, X, PC, TC, DR, batch_size=200, eta_bn_prop=0.0):
 
     # make predictions on minibatches and then combine
     for i in range(n_batches):
-        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs = get_minibatch(
-            X, None, PC, TC, DR, i, batch_size
+        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
+            X, None, PC, TC, DR, TE, i, batch_size
         )
         Z, pred_probs = model.predict(
-            batch_xs, batch_pcs, batch_tcs, batch_drs, eta_bn_prop=eta_bn_prop
+            batch_xs, batch_pcs, batch_tcs, batch_drs, batch_tes, eta_bn_prop=eta_bn_prop
         )
         pred_probs_all.append(pred_probs)
 
@@ -1501,7 +1682,7 @@ def print_top_bg(bg, feature_names, n_top_words=10):
     print(np.exp(temp[: -n_top_words - 1 : -1]))
 
 
-def evaluate_perplexity(model, X, Y, PC, TC, DR, batch_size, eta_bn_prop=0.0):
+def evaluate_perplexity(model, X, Y, PC, TC, DR, TE, batch_size, eta_bn_prop=0.0):
     # Evaluate the approximate perplexity on a subset of the data (using words, labels, and covariates)
     doc_sums = np.array(X.sum(axis=1), dtype=np.float32).reshape(-1)
     X = X.astype("float32")
@@ -1513,16 +1694,19 @@ def evaluate_perplexity(model, X, Y, PC, TC, DR, batch_size, eta_bn_prop=0.0):
         TC = TC.astype("float32")
     if DR is not None:
         DR = DR.astype("float32")
+    if TE is not None:
+        TE = TE.astype("float32")
+    
     losses = []
 
     n_items, _ = X.shape
     n_batches = int(np.ceil(n_items / batch_size))
     for i in range(n_batches):
-        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs = get_minibatch(
-            X, Y, PC, TC, DR, i, batch_size
+        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
+            X, Y, PC, TC, DR, TE, i, batch_size
         )
         batch_losses = model.get_losses(
-            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, eta_bn_prop=eta_bn_prop
+            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, eta_bn_prop=eta_bn_prop
         )
         losses.append(batch_losses)
     losses = np.hstack(losses)
@@ -1563,10 +1747,10 @@ def generate_topics(beta, feature_names, n=100, sparsity_threshold=1e-5):
     return lines
 
 def predict_labels_and_evaluate(
-    model, X, Y, PC, TC, DR, output_dir=None, subset="train", batch_size=200
+    model, X, Y, PC, TC, DR, TE, output_dir=None, subset="train", batch_size=200
 ):
     # Predict labels for all instances using the classifier network and evaluate the accuracy
-    pred_probs = predict_label_probs(model, X, PC, TC, DR, batch_size, eta_bn_prop=0.0)
+    pred_probs = predict_label_probs(model, X, PC, TC, DR, TE, batch_size, eta_bn_prop=0.0)
     np.savez(
         os.path.join(output_dir, "pred_probs." + subset + ".npz"), pred_probs=pred_probs
     )
@@ -1617,7 +1801,7 @@ def print_topic_label_associations(
 
 
 def save_document_representations(
-    model, X, Y, PC, TC, DR, ids, output_dir, partition, batch_size=200
+    model, X, Y, PC, TC, DR, TE, ids, output_dir, partition, batch_size=200
 ):
     # compute the mean of the posterior of the latent representation for each documetn and save it
     if Y is not None:
@@ -1628,17 +1812,39 @@ def save_document_representations(
     thetas = []
 
     for i in range(n_batches):
-        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs = get_minibatch(
-            X, Y, PC, TC, DR, i, batch_size
+        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
+            X, Y, PC, TC, DR, TE, i, batch_size
         )
         thetas.append(
-            model.compute_theta(batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs)
+            model.compute_theta(batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes)
         )
     theta = np.vstack(thetas)
 
     np.savez(
         os.path.join(output_dir, "theta." + partition + ".npz"), theta=theta, ids=ids
     )
+
+def save_etas(
+    model, X, Y, PC, TC, DR, TE, ids, output_dir, partition, batch_size=200
+):
+    # compute the mean of the posterior of the latent representation eta for each documetn and save it
+    if Y is not None:
+        Y = np.zeros_like(Y)
+
+    n_items, _ = X.shape
+    n_batches = int(np.ceil(n_items / batch_size))
+    etas = []
+
+    for i in range(n_batches):
+        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
+            X, Y, PC, TC, DR, TE, i, batch_size
+        )
+        etas.append(
+            model.compute_eta(batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes)
+        )
+    eta = np.vstack(etas)
+    # print(eta.shape)
+    np.save(os.path.join(output_dir, "eta." + partition + ".npy"), eta)
 
 
 def save_scholar_model(options, model, epoch=0, dev_metrics={}, is_final=False):
@@ -1653,6 +1859,10 @@ def save_scholar_model(options, model, epoch=0, dev_metrics={}, is_final=False):
     except git.exc.InvalidGitRepositoryError:
         sha = None
     fname = 'torch_model.pt' if not is_final else 'torch_model_final.pt'
+
+    if options.save_for_each_epoch is not None:
+        fname = "torch_model_epoch_" + str(epoch) + ".pt"
+
     torch.save(
         {
             # Scholar arguments
