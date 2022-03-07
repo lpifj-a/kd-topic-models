@@ -120,7 +120,7 @@ def compute_npmi_at_n_during_training(beta, ref_counts, n=10, smoothing=0.01):
                     npmi = (np.log10(n_docs) + np.log10(c12) - np.log10(c1) - np.log10(c2)) / (np.log10(n_docs) - np.log10(c12))
                 npmi_vals.append(npmi)
         npmi_means.append(np.mean(npmi_vals))
-    return np.mean(npmi_means)
+    return np.mean(npmi_means), npmi_means
 
 
 if __name__ == '__main__':
