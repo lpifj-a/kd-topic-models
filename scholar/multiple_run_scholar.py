@@ -99,7 +99,7 @@ if __name__ == "__main__":
                'npmi_epoch': int(npmi.get('epoch', 0)),
 
                'npmi_ext_value': compute_npmi_at_n(
-                   topics, nyt_vocab, nyt_counts, n=run_args.npmi_words, silent=True,
+                   topics, nyt_vocab, nyt_counts, n=run_args.npmi_words, silent=False,
                 ),
                'tu': np.mean(tu([t.strip().split() for t in topics])),
                
@@ -108,6 +108,9 @@ if __name__ == "__main__":
             },
             index=[run],
         )
+
+        print(results)
+        print(outdir_args.o)
 
         results.to_csv(
             Path(outdir_args.o, "dev_metrics.csv"),
