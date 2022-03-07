@@ -644,10 +644,10 @@ class torchScholar(nn.Module):
             te_out = TE
             if self.use_pseudo_doc:
                 t = self.doc_reconstruction_temp
-                TE = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
-                te_out = TE
+                pseudo_doc = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+                te_out = pseudo_doc
             if self.use_teacher_eta_layer:
-                te_out = F.softplus(self.teacher_eta_layer(TE))
+                te_out = F.softplus(self.teacher_eta_layer(te_out))
             encoder_parts.append(te_out)
         if self.n_labels > 0:
             encoder_parts.append(Y)
