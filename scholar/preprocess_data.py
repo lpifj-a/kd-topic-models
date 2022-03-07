@@ -261,6 +261,9 @@ def preprocess_data(
             label_fields = [label_fields]
     if label_fields is None:
         label_fields = []
+        # labelがないデータを扱うときにlabel_listsが定義されていないというエラーが出たので書き加えた
+        print("label_fiels is None")
+        label_lists = {}
 
     # make vocabulary
     train_ids, train_parsed, train_labels = [], [], []
@@ -402,6 +405,9 @@ def preprocess_data(
         test_sum = np.array(test_X_sage.sum(axis=0))
         print("%d words missing from test data" % np.sum(test_sum == 0))
 
+    print("Done!")
+
+''' scipyの方でメモリエラーが出るので以下のコードは使わない。ラベルなしデータを学習する分には多分問題ないはず。
     sage_output = {
         "tr_data": train_X_sage,
         "tr_aspect": tr_aspect,
@@ -416,8 +422,7 @@ def preprocess_data(
     if n_test > 0:
         sage_output["te_aspect"] = te_no_aspect
     savemat(os.path.join(output_dir, "sage_unlabeled.mat"), sage_output)
-
-    print("Done!")
+'''
 
 
 # to pass to pool.imap
@@ -481,7 +486,10 @@ def process_subset(
             label_index = dict(
                 zip(labels_df_subset.columns, range(len(labels_df_subset)))
             )
-    X = np.zeros([n_items, vocab_size], dtype=count_dtype)
+    if len(label_fields) > 0:
+        X = np.zeros([n_items, vocab_size], dtype=count_dtype)
+    else:
+        X = sparse.lil_matrix((n_items, vocab_size), dtype=count_dtype)
     
     dat_strings = []
     dat_labels = []
@@ -527,7 +535,11 @@ def process_subset(
             ] += values
 
     # convert to a sparse representation
-    sparse_X = sparse.csr_matrix(X)
+    if len(label_fields) > 0:
+        sparse_X = sparse.csr_matrix(X)
+    else:
+        sparse_X = X.tocsr()
+
     fh.save_sparse(sparse_X, os.path.join(output_dir, output_prefix + ".npz"))
 
     print("Size of {:s} document-term matrix:".format(output_prefix), sparse_X.shape)
@@ -550,7 +562,11 @@ def process_subset(
         )
 
     # save output for Jacob Eisenstein's SAGE code:
-    sparse_X_sage = sparse.csr_matrix(X, dtype=float)
+    if len(label_fields) > 0:
+        sparse_X_sage = sparse.csr_matrix(X, dtype=float)
+    else:
+        sparse_X_sage = X.tocsr()
+
     vocab_for_sage = np.zeros((vocab_size,), dtype=np.object)
     vocab_for_sage[:] = vocab
 
