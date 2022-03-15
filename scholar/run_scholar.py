@@ -267,15 +267,17 @@ def main(call=None):
         help="Use document representation & specify the location",
     )
     parser.add_argument(
-        "--doc-reconstruction-weight",
+        "--doc-reconstruction-weight-list",
         type=float,
         default=None,
+        nargs='*',
         help="How much to weigh doc repesentation reconstruction (0 means none)",
     )
     parser.add_argument(
-        "--doc-reconstruction-temp",
+        "--doc-reconstruction-temp-list",
         type=float,
         default=None,
+        nargs='*',
         help="Temperature to use when softmaxing over the doc reconstruction logits",
     )
     parser.add_argument(
@@ -351,17 +353,12 @@ def main(call=None):
         help="Save the eta in SCHOLAR",
     )
     parser.add_argument(
-        "--teacher-eta-dir",
-        dest="teacher_eta_dir",
+        "--teacher-eta-dirs",
+        dest="teacher_eta_dirs",
         type=str,
         default=None,
-        help="load the teacher eta",
-    )
-    parser.add_argument(
-        "--use-teacher-eta-layer",
-        action="store_true",
-        default=False,
-        help="Use a teacher eta layer",
+        nargs='*',
+        help="load the teacher eta list",
     )
     parser.add_argument(
         "--use-pseudo-doc",
@@ -480,11 +477,14 @@ def main(call=None):
     # load the teacher eta
     print("Loading the teacher eta")
 
-
-    train_teacher_eta = load_teacher_eta(options.teacher_eta_dir, prefix=options.train_prefix, row_selector=train_row_selector)
-    teacher_eta_dim = train_teacher_eta.shape[-1] if options.teacher_eta_dir else None
-
-
+    train_teacher_eta_list = []
+    teacher_eta_dim_list = []
+    if options.teacher_eta_dirs:
+        for path in options.teacher_eta_dirs:
+            train_teacher_eta = load_teacher_eta(path, prefix=options.train_prefix, row_selector=train_row_selector)
+            train_teacher_eta_list.append(train_teacher_eta)
+            teacher_eta_dim_list.append(train_teacher_eta.shape[-1])
+    
     # load the dev data
     if options.dev_prefix is not None:
         dev_X, _, dev_row_selector, dev_ids = load_word_counts(
@@ -519,13 +519,19 @@ def main(call=None):
             dev_doc_reps = np.log(np.array(dev_X.todense()) + 1e-10) # HACK
 
         # load dev teacher eta
-        try:
-            dev_teacher_eta = load_teacher_eta(options.teacher_eta_dir, prefix=options.dev_prefix,row_selector=dev_row_selector)
-        except:
-            print("Dev teacher eta not found, will set to log of dev_X")
-            dev_teacher_eta = np.log(np.array(dev_X.todense()) + 1e-10) # HACK
+        dev_teacher_eta_list = []
+        if options.teacher_eta_dirs:
+            for path in options.teacher_eta_dirs:
+                try:
+                    dev_teacher_eta = load_teacher_eta(path, prefix=options.dev_prefix,row_selector=dev_row_selector)
+                except:
+                    print("Dev teacher eta not found, will set to log of dev_X")
+                    dev_teacher_eta = np.log(np.array(dev_X.todense()) + 1e-10) # HACK
+
+                dev_teacher_eta_list.append(dev_teacher_eta)
+
     else:
-        dev_teacher_eta = None
+        dev_teacher_eta_list = []
 
     # load the test data
     test_ids = None
@@ -565,7 +571,7 @@ def main(call=None):
         test_prior_covars = None
         test_topic_covars = None
         test_doc_reps = None
-        test_teacher_eta = None
+        test_teacher_eta_list = []
 
 
     # collect label data for the deviations
@@ -611,7 +617,7 @@ def main(call=None):
         n_prior_covars=n_prior_covars,
         n_topic_covars=n_topic_covars,
         doc_reps_dim=doc_reps_dim,
-        teacher_eta_dim=teacher_eta_dim,
+        teacher_eta_dim_list=teacher_eta_dim_list,
     )
 
     print("Network architecture:")
@@ -690,7 +696,7 @@ def main(call=None):
             PC=train_prior_covars,
             TC=train_topic_covars,
             DR=train_doc_reps,
-            TE=train_teacher_eta,
+            TE_list=train_teacher_eta_list,
             vocab=vocab,
             prior_covar_names=prior_covar_names,
             topic_covar_names=topic_covar_names,
@@ -705,7 +711,7 @@ def main(call=None):
             PC_dev=dev_prior_covars,
             TC_dev=dev_topic_covars,
             DR_dev=dev_doc_reps,
-            TE_dev=dev_teacher_eta,
+            TE_dev_list=dev_teacher_eta_list,
         )
 
     # load best model
@@ -728,7 +734,7 @@ def main(call=None):
             dev_prior_covars,
             dev_topic_covars,
             dev_doc_reps,
-            dev_teacher_eta,
+            dev_teacher_eta_list,
             options.batch_size,
             eta_bn_prop=0.0,
         )
@@ -745,7 +751,7 @@ def main(call=None):
             test_prior_covars,
             test_topic_covars,
             test_doc_reps,
-            test_teacher_eta,
+            test_teacher_eta_list,
             options.batch_size,
             eta_bn_prop=0.0,
         )
@@ -764,7 +770,7 @@ def main(call=None):
             train_prior_covars,
             train_topic_covars,
             train_doc_reps,
-            train_teacher_eta,
+            train_teacher_eta_list,
             options.output_dir,
             subset="train",
         )
@@ -777,7 +783,7 @@ def main(call=None):
                 dev_prior_covars,
                 dev_topic_covars,
                 dev_doc_reps,
-                dev_teacher_eta,
+                dev_teacher_eta_list,
                 options.output_dir,
                 subset="dev",
             )
@@ -790,7 +796,7 @@ def main(call=None):
                 test_prior_covars,
                 test_topic_covars,
                 test_doc_reps,
-                test_teacher_eta,
+                test_teacher_eta_list,
                 options.output_dir,
                 subset="test",
             )
@@ -829,7 +835,7 @@ def main(call=None):
             dev_prior_covars,
             dev_topic_covars,
             dev_doc_reps,
-            dev_teacher_eta,
+            dev_teacher_eta_list,
             dev_ids,
             options.output_dir,
             "dev",
@@ -844,7 +850,7 @@ def main(call=None):
             test_prior_covars,
             test_topic_covars,
             test_doc_reps,
-            test_teacher_eta,
+            test_teacher_eta_list,
             test_ids,
             options.output_dir,
             "test",
@@ -891,7 +897,7 @@ def main(call=None):
                 test_prior_covars,
                 test_topic_covars,
                 test_doc_reps,
-                test_teacher_eta,
+                test_teacher_eta_list,
                 test_ids,
                 options.output_dir,
                 "test",
@@ -1115,7 +1121,7 @@ def make_network(
     options,
     vocab_size,
     doc_reps_dim=None,
-    teacher_eta_dim=None,
+    teacher_eta_dim_list = [],
     label_type=None,
     n_labels=0,
     n_prior_covars=0,
@@ -1127,13 +1133,12 @@ def make_network(
         zero_out_embeddings=options.zero_out_embeddings,
         reconstruct_bow=options.reconstruct_bow,
         doc_reps_dim=doc_reps_dim,
-        teacher_eta_dim=teacher_eta_dim,
-        use_teacher_eta_layer=options.use_teacher_eta_layer,
+        teacher_eta_dim_list = teacher_eta_dim_list,
         attend_over_doc_reps=options.attend_over_doc_reps,
         use_doc_layer=options.use_doc_layer,
         use_pseudo_doc=options.use_pseudo_doc,
-        doc_reconstruction_weight=options.doc_reconstruction_weight,
-        doc_reconstruction_temp=options.doc_reconstruction_temp,
+        doc_reconstruction_weight_list=options.doc_reconstruction_weight_list,
+        doc_reconstruction_temp_list=options.doc_reconstruction_temp_list,
         doc_reconstruction_min_count=options.doc_reconstruction_min_count,
         n_topics=options.n_topics,
         vocab_size=vocab_size,
@@ -1161,7 +1166,7 @@ def train(
     PC,
     TC,
     DR,
-    TE,
+    TE_list,
     vocab,
     prior_covar_names,
     topic_covar_names,
@@ -1175,7 +1180,7 @@ def train(
     PC_dev=None,
     TC_dev=None,
     DR_dev=None,
-    TE_dev=None,
+    TE_dev_list=None,
     bn_anneal=True,
     init_eta_bn_prop=1.0,
     eta_bn_anneal_step_const=0.75,
@@ -1184,7 +1189,7 @@ def train(
 ):
     # Train the model
     n_train, vocab_size = X.shape
-    mb_gen = create_minibatch(X, Y, PC, TC, DR, TE, batch_size=batch_size, rng=rng)
+    mb_gen = create_minibatch(X, Y, PC, TC, DR, TE_list, batch_size=batch_size, rng=rng)
     total_batch = int(n_train / batch_size)
     batches = 0
 
@@ -1336,7 +1341,7 @@ def train(
                     PC_dev,
                     TC_dev,
                     DR_dev,
-                    TE_dev,
+                    TE_dev_list,
                     batch_size,
                     eta_bn_prop=eta_bn_prop,
                 )
@@ -1419,7 +1424,7 @@ def get_topic_diversity(beta, topk):
 
 
 
-def create_minibatch(X, Y, PC, TC, DR, TE, batch_size=200, rng=None):
+def create_minibatch(X, Y, PC, TC, DR, TE_list, batch_size=200, rng=None):
     # Yield a random minibatch
     while True:
         # Return random data samples of a size 'minibatch_size' at each iteration
@@ -1450,16 +1455,17 @@ def create_minibatch(X, Y, PC, TC, DR, TE, batch_size=200, rng=None):
         else:
             DR_mb = None
 
-        if TE is not None:
-            TE_mb = TE[ixs, :].astype("float32")
+        if TE_list:
+            TE_mb_list = []
+            for TE in TE_list:
+                TE_mb_list.append(TE[ixs, :].astype("float32"))
         else:
-            TE_mb = None
+            TE_mb_list = []
+
+        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb_list
 
 
-        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb
-
-
-def get_minibatch(X, Y, PC, TC, DR, TE, batch, batch_size=200):
+def get_minibatch(X, Y, PC, TC, DR, TE_list, batch, batch_size=200):
     # Get a particular non-random segment of the data
     n_items, _ = X.shape
     n_batches = int(np.ceil(n_items / float(batch_size)))
@@ -1491,12 +1497,14 @@ def get_minibatch(X, Y, PC, TC, DR, TE, batch, batch_size=200):
     else:
         DR_mb = None  
 
-    if TE is not None:
-       TE_mb = TE[ixs, :].astype("float32")
+    if TE_list :
+        TE_mb_list = []
+        for TE in TE_list:
+            TE_mb_list.append(TE[ixs, :].astype("float32"))
     else:
-        TE_mb = None  
+        TE_mb_list = []  
 
-    return X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb
+    return X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb_list
 
 
 def update_metrics(current, best=None, epoch=None):
@@ -1522,7 +1530,7 @@ def update_metrics(current, best=None, epoch=None):
     return best
 
 
-def predict_label_probs(model, X, PC, TC, DR, TE, batch_size=200, eta_bn_prop=0.0):
+def predict_label_probs(model, X, PC, TC, DR, TE_list, batch_size=200, eta_bn_prop=0.0):
     # Predict a probability distribution over labels for each instance using the classifier part of the network
 
     n_items, _ = X.shape
@@ -1532,7 +1540,7 @@ def predict_label_probs(model, X, PC, TC, DR, TE, batch_size=200, eta_bn_prop=0.
     # make predictions on minibatches and then combine
     for i in range(n_batches):
         batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
-            X, None, PC, TC, DR, TE, i, batch_size
+            X, None, PC, TC, DR, TE_list, i, batch_size
         )
         Z, pred_probs = model.predict(
             batch_xs, batch_pcs, batch_tcs, batch_drs, batch_tes, eta_bn_prop=eta_bn_prop
@@ -1682,7 +1690,7 @@ def print_top_bg(bg, feature_names, n_top_words=10):
     print(np.exp(temp[: -n_top_words - 1 : -1]))
 
 
-def evaluate_perplexity(model, X, Y, PC, TC, DR, TE, batch_size, eta_bn_prop=0.0):
+def evaluate_perplexity(model, X, Y, PC, TC, DR, TE_list, batch_size, eta_bn_prop=0.0):
     # Evaluate the approximate perplexity on a subset of the data (using words, labels, and covariates)
     doc_sums = np.array(X.sum(axis=1), dtype=np.float32).reshape(-1)
     X = X.astype("float32")
@@ -1694,8 +1702,9 @@ def evaluate_perplexity(model, X, Y, PC, TC, DR, TE, batch_size, eta_bn_prop=0.0
         TC = TC.astype("float32")
     if DR is not None:
         DR = DR.astype("float32")
-    if TE is not None:
-        TE = TE.astype("float32")
+    if TE_list :
+        for i,TE in enumerate(TE_list):
+            TE_list[i] = TE.astype("float32")
     
     losses = []
 
@@ -1703,7 +1712,7 @@ def evaluate_perplexity(model, X, Y, PC, TC, DR, TE, batch_size, eta_bn_prop=0.0
     n_batches = int(np.ceil(n_items / batch_size))
     for i in range(n_batches):
         batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
-            X, Y, PC, TC, DR, TE, i, batch_size
+            X, Y, PC, TC, DR, TE_list, i, batch_size
         )
         batch_losses = model.get_losses(
             batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, eta_bn_prop=eta_bn_prop
@@ -1747,10 +1756,10 @@ def generate_topics(beta, feature_names, n=100, sparsity_threshold=1e-5):
     return lines
 
 def predict_labels_and_evaluate(
-    model, X, Y, PC, TC, DR, TE, output_dir=None, subset="train", batch_size=200
+    model, X, Y, PC, TC, DR, TE_list, output_dir=None, subset="train", batch_size=200
 ):
     # Predict labels for all instances using the classifier network and evaluate the accuracy
-    pred_probs = predict_label_probs(model, X, PC, TC, DR, TE, batch_size, eta_bn_prop=0.0)
+    pred_probs = predict_label_probs(model, X, PC, TC, DR, TE_list, batch_size, eta_bn_prop=0.0)
     np.savez(
         os.path.join(output_dir, "pred_probs." + subset + ".npz"), pred_probs=pred_probs
     )
@@ -1801,7 +1810,7 @@ def print_topic_label_associations(
 
 
 def save_document_representations(
-    model, X, Y, PC, TC, DR, TE, ids, output_dir, partition, batch_size=200
+    model, X, Y, PC, TC, DR, TE_list, ids, output_dir, partition, batch_size=200
 ):
     # compute the mean of the posterior of the latent representation for each documetn and save it
     if Y is not None:
@@ -1813,7 +1822,7 @@ def save_document_representations(
 
     for i in range(n_batches):
         batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
-            X, Y, PC, TC, DR, TE, i, batch_size
+            X, Y, PC, TC, DR, TE_list, i, batch_size
         )
         thetas.append(
             model.compute_theta(batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes)
@@ -1825,7 +1834,7 @@ def save_document_representations(
     )
 
 def save_etas(
-    model, X, Y, PC, TC, DR, TE, ids, output_dir, partition, batch_size=200
+    model, X, Y, PC, TC, DR, TE_list, ids, output_dir, partition, batch_size=200
 ):
     # compute the mean of the posterior of the latent representation eta for each documetn and save it
     if Y is not None:
@@ -1837,7 +1846,7 @@ def save_etas(
 
     for i in range(n_batches):
         batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
-            X, Y, PC, TC, DR, TE, i, batch_size
+            X, Y, PC, TC, DR, TE_list, i, batch_size
         )
         etas.append(
             model.compute_eta(batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes)
