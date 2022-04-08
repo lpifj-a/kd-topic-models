@@ -10,7 +10,7 @@ import pandas as pd
 from tqdm import tqdm
 
 import file_handling as fh
-from scholar import Scholar
+from scholar_optuna import Scholar
 from compute_npmi import compute_npmi_at_n_during_training
 import datetime
 
@@ -268,6 +268,7 @@ def main(call=None):
         "--doc-reps-dir",
         help="Use document representation & specify the location",
     )
+    """
     parser.add_argument(
         "--doc-reconstruction-weight-list",
         type=float,
@@ -275,6 +276,7 @@ def main(call=None):
         nargs='*',
         help="How much to weigh doc repesentation reconstruction (0 means none)",
     )
+    
     parser.add_argument(
         "--doc-reconstruction-temp-list",
         type=float,
@@ -282,6 +284,7 @@ def main(call=None):
         nargs='*',
         help="Temperature to use when softmaxing over the doc reconstruction logits",
     )
+    """
     parser.add_argument(
         "--doc-reconstruction-min-count",
         type=float,
@@ -653,48 +656,23 @@ def main(call=None):
                 vocab=vocab,
             )
 
-    # create the model
-    if options.restart:
-        print(f"Loading existing model from '{options.output_dir}'")
-        model, _ = load_scholar_model(
-            os.path.join(options.output_dir, "torch_model.pt"),
-            embeddings=embeddings,
-        )
-        model.train()
-    else:
-        model = Scholar(
-            network_architecture,
-            alpha=options.alpha,
-            learning_rate=options.learning_rate,
-            init_embeddings=embeddings,
-            init_bg=init_bg,
-            adam_beta1=options.momentum,
-            device=options.device,
-            seed=seed,
-            classify_from_covars=options.covars_predict,
-            classify_from_topics=options.topics_predict,
-            classify_from_doc_reps=options.classify_from_doc_reps,
-        )
-
-    if options.randomize_doc_reps:
-        min_dr, max_dr = train_doc_reps.min(), train_doc_reps.max()
-        train_doc_reps = np.random.uniform(min_dr, max_dr, size=train_doc_reps.shape)
-        dev_doc_reps = np.random.uniform(min_dr, max_dr, size=dev_doc_reps.shape)
-        if test_doc_reps is not None:
-            test_doc_reps = np.random.uniform(min_dr, max_dr, size=test_doc_reps.shape)
-
-    # make output directory
-    fh.makedirs(options.output_dir)
 
     # train the model
     print("Optimizing full model")
     if options.epochs > 0:
         # optuna によるハイパーパラメータの探索
+        
+        # 最適化の結果を保持するためにstudyオブジェクトを生成
+        # sqliteのデータベースにログを保存
         # direction で目的変数の最大化
-        study = optuna.create_study(direction='maximize')
+        study = optuna.create_study(
+            storage="sqlite:///kd_imdb.db",
+            study_name="kd_imdb_params",
+            load_if_exists=True,
+            direction='maximize',
+            )
         study.optimize(lambda trial : objective(
                                             trial,
-                                            model=model,
                                             network_architecture=network_architecture,
                                             options=options,
                                             X=train_X,
@@ -718,6 +696,10 @@ def main(call=None):
                                             TC_dev=dev_topic_covars,
                                             DR_dev=dev_doc_reps,
                                             TE_dev_list=dev_teacher_eta_list,
+                                            init_embeddings=embeddings,
+                                            init_bg=init_bg,
+                                            seed=seed,
+                                            embeddings=embeddings,
                                       ),
                                      n_trials=100
         )
@@ -916,7 +898,6 @@ def main(call=None):
 # https://optuna.readthedocs.io/en/stable/faq.html#how-to-define-objective-functions-that-have-own-arguments
 def objective(
         trial,
-        model,
         network_architecture,
         options,
         X,
@@ -943,8 +924,59 @@ def objective(
         init_eta_bn_prop=1.0,
         eta_bn_anneal_step_const=0.75,
         rng=None,
-        min_weights_sq=1e-7,     
+        min_weights_sq=1e-7, 
+        init_embeddings=None,
+        init_bg=None,
+        seed=None,
+        embeddings=None,    
 ):
+
+    # create the model
+    if options.restart:
+        print(f"Loading existing model from '{options.output_dir}'")
+        model, _ = load_scholar_model(
+            os.path.join(options.output_dir, "torch_model.pt"),
+            embeddings=embeddings,
+        )
+        model.train()
+    else:
+        doc_reconstruction_weight_list = []
+        doc_reconstruction_temp_list = []
+        num_teachers = len(options.teacher_eta_dirs)
+        # まずは教師が一つの時のみを実装
+        # 複数教師の場合は動かない
+        if num_teachers >=2 : print("今は対応していません")
+        for i in range(num_teachers):
+            doc_reconstruction_weight_list.append(trial.suggest_float("doc_reconstruction_weight"+str(i),0.1,0.9,step=0.1))
+            doc_reconstruction_temp_list.append(trial.suggest_float("doc_reconstruction_temp"+str(i),1,3,step=0.1))
+
+
+        model = Scholar(
+            network_architecture,
+            trial=trial, #optuna
+            doc_reconstruction_weight_list=doc_reconstruction_weight_list, # optuna
+            doc_reconstruction_temp_list=doc_reconstruction_temp_list, # optuna
+            alpha=options.alpha,
+            learning_rate=options.learning_rate,
+            init_embeddings=init_embeddings,
+            init_bg=init_bg,
+            adam_beta1=options.momentum,
+            device=options.device,
+            seed=seed,
+            classify_from_covars=options.covars_predict,
+            classify_from_topics=options.topics_predict,
+            classify_from_doc_reps=options.classify_from_doc_reps,
+        )
+
+    if options.randomize_doc_reps:
+        min_dr, max_dr = train_doc_reps.min(), train_doc_reps.max()
+        train_doc_reps = np.random.uniform(min_dr, max_dr, size=train_doc_reps.shape)
+        dev_doc_reps = np.random.uniform(min_dr, max_dr, size=dev_doc_reps.shape)
+        if test_doc_reps is not None:
+            test_doc_reps = np.random.uniform(min_dr, max_dr, size=test_doc_reps.shape)
+
+    # make output directory
+    fh.makedirs(options.output_dir)
        
     npmi = train(
             trial = trial,
@@ -1208,8 +1240,10 @@ def make_network(
         attend_over_doc_reps=options.attend_over_doc_reps,
         use_doc_layer=options.use_doc_layer,
         use_pseudo_doc=options.use_pseudo_doc,
-        doc_reconstruction_weight_list=options.doc_reconstruction_weight_list,
-        doc_reconstruction_temp_list=options.doc_reconstruction_temp_list,
+        # Use Optuna
+        # doc_reconstruction_weight_list=options.doc_reconstruction_weight_list,
+        # Use Optuna
+        # doc_reconstruction_temp_list=options.doc_reconstruction_temp_list,
         doc_reconstruction_min_count=options.doc_reconstruction_min_count,
         n_topics=options.n_topics,
         vocab_size=vocab_size,
@@ -1467,7 +1501,8 @@ def train(
                     os.makedirs(options.output_dir+"/npmi_for_each_topic", exist_ok=True)
                     dt_now = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S{}').format('')
                     best_npmi_for_each_topic.to_csv(options.output_dir+"/npmi_for_each_topic/"+dt_now + ".csv")
-                    return model
+                    # 返り値をmodelからnpmiの最高値に変更
+                    return best_dev_metrics[dev_metric]["value"]
                 # switch back to training mode
                 model.train()
 
