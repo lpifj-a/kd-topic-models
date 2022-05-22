@@ -1,10 +1,8 @@
 # Transfer Learning for Neural Topic Models using Knowledge Distillation
 
-This repository is a modified version of kd-topic for this study
-
 # Rough Steps
 
-## 1. Create conda environment (which is a modification of [Scholar](https://github.com/dallascard/scholar)).
+## 1. Create conda environment
 ```
 conda env create -f scholar/scholar.yml
 ```
@@ -44,7 +42,7 @@ python data/wiki20200501/create_dev_split.py
 python scholar/run_scholar.py ./data/wiki20200501/processed-dev  -k 500 --emb-dim 500  --epochs 500 --batch-size 5000 --background-embeddings --device 0 -l 0.002 --alpha 0.5 --eta-bn-anneal-step-const 0.25 -o ./outputs/wiki_topic_500_emb_dim_500  --save-for-each-epoch 10 
 ```
 
-- Fine-tune the neural topic model with the target data using the obtained parameters.
+- Fine-tuning the neural topic model with the target data using the obtained parameters.
 ```
 python scholar/init_embeddings.py data/imdb/processed-dev/train.vocab.json  --teacher-vocab data/wiki20200501/processed-dev/train.vocab.json  --model-file outputs/wiki_topic_500_emb_dim_500/torch_model_epoch_100.pt  -o ./scholar/outputs/imdb/wiki_topic_500_emb_500_epoch_100
 ```
