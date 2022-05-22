@@ -1,99 +1,57 @@
-# Improving Neural Topic Models using Knowledge Distillation
-
-Repo for our [EMNLP 2020 paper](https://www.aclweb.org/anthology/2020.emnlp-main.137/). We will clean up the implementation for improved ease-of-use, but provide the code included in our original submission for the time being. 
-
-If you use this code, please use the following citation:
-```
-@inproceedings{hoyle-etal-2020-improving,
-    title = "Improving Neural Topic Models Using Knowledge Distillation",
-    author = "Hoyle, Alexander Miserlis  and
-      Goel, Pranav  and
-      Resnik, Philip",
-    booktitle = "Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP)",
-    month = nov,
-    year = "2020",
-    address = "Online",
-    publisher = "Association for Computational Linguistics",
-    url = "https://www.aclweb.org/anthology/2020.emnlp-main.137",
-    pages = "1752--1771",
-}
-```
+# Transfer Learning for Neural Topic Models using Knowledge Distillation
 
 # Rough Steps
 
-1. As of now, you'll need two conda environments to run both the BERT teacher and topic modeling student (which is a modification of [Scholar](https://github.com/dallascard/scholar)). The environment files are defined in `teacher/teacher.yml` and `scholar/scholar.yml` for the teacher and topic model, respectively. For example:
-    `conda env create -f teacher/teacher.yml`
-    (edit the first line in the `yml` file if you want to change the name of the resulting environment; the default is `transformers28`).
-
-2. We use the data processing pipeline from [Scholar](https://github.com/dallascard/scholar). We'll use the IMDb data to serve as a guide (preprocessing scripts for the Wikitext and 20ng data are also included for replication purposes, but the processing scripts aren't general-purpose):
-
+## 1. Create conda environment
 ```
-conda activate scholar
+conda env create -f scholar/scholar.yml
+```
+## 2. Preprocess the data
+
+### Student data
+- download the data
+```
 python data/imdb/download_imdb.py
-
-# main preprocessing script
-python preprocess_data.py data/imdb/train.jsonlist data/imdb/processed --vocab_size 5000 --test data/imdb/test.jsonlist
-# create a dev split from the train data--change filenames if using different data
-create_dev_split.py
+```
+- main preprocessing script
+```
+python preprocess_data.py ~/kd-topic-models/data/imdb/train.jsonlist ~/kd-topic-models/data/imdb/processed --vocab-size 5000 --test ~/kd-topic-models/data/imdb/test.jsonlist --label rating
+```
+- create a dev split from the train data
+```
+python data/imdb/create_dev_split.py
 ```
 
-3. Run the teacher model, below is an example using IMDb.
+### Teacher data
+- download the data
 ```
-conda activate transformers28
-
-python teacher/bert_reconstruction.py \
-    --input-dir ./data/imdb/processed-dev \
-    --output-dir ./data/imdb/processed-dev/logits \ 
-    --do-train \
-    --evaluate-during-training \
-    --truncate-dev-set-for-eval 120 \
-    --logging-steps 200 \
-    --save-steps 1000 \
-    --num-train-epochs 6 \
-    --seed 42 \
-    --num-workers 4 \
-    --batch-size 20 \
-    --gradient-accumulation-steps 8 \
-    --document-split-pooling mean-over-logits
+python data/wiki20200501/download_wiki.py
+```
+- main preprocessing script
+```
+python preprocess_data.py ~/kd-topic-models/data/wiki20200501/train.jsonlist ~/kd-topic-models/data/wiki20200501/processed --vocab-size 50000
+```
+- create a dev split from the train data
+```
+python data/wiki20200501/create_dev_split.py
 ```
 
-4. Collect the logits from the teacher model (the `--checkpoint-folder-pattern` argument accepts grub pattern matching in case you want to create logits for different stages of training; be sure to enclose in double quotes `"`)
+## 3. Run the teacher model
+- Pre-training the parameters of the inference network of the neural topic model using the Wikipedia dataset
 ```
-conda activate transformers28
-
-python teacher/bert_reconstruction.py \
-    --output-dir ./data/imdb/processed-dev/logits \
-    --seed 42 \
-    --num-workers 6 \
-    --get-reps \
-    --checkpoint-folder-pattern "checkpoint-9000" \
-    --save-doc-logits \
-    --no-dev
+python scholar/run_scholar.py ./data/wiki20200501/processed-dev  -k 500 --emb-dim 500  --epochs 500 --batch-size 5000 --background-embeddings --device 0 -l 0.002 --alpha 0.5 --eta-bn-anneal-step-const 0.25 -o ./outputs/wiki_topic_500_emb_dim_500  --save-for-each-epoch 10 
 ```
 
-5. Run the topic model (there are a number of extraneous experimental arguments in `run_scholar.py`, which we intend to strip out in a future version).
+- Fine-tuning the neural topic model with the target data using the obtained parameters.
 ```
-conda activate scholar
+python scholar/init_embeddings.py data/imdb/processed-dev/train.vocab.json  --teacher-vocab data/wiki20200501/processed-dev/train.vocab.json  --model-file outputs/wiki_topic_500_emb_dim_500/torch_model_epoch_100.pt  -o ./scholar/outputs/imdb/wiki_topic_500_emb_500_epoch_100
+```
+```
+python multiple_run_scholar.py $(cat args/imdb/scholar_wiki.txt)
+```
 
-python scholar/run_scholar.py \
-    ./data/imdb/processed-dev \
-    --dev-metric npmi \
-    -k 50 \
-    --epochs 500 \
-    --patience 500 \
-    --batch-size 200 \
-    --background-embeddings \
-    --device 0 \
-    --dev-prefix dev \
-    -lr 0.002 \
-    --alpha 0.5 \
-    --eta-bn-anneal-step-const 0.25 \
-    --doc-reps-dir ./data/imdb/processed-dev/logits/checkpoint-9000/doc_logits \
-    --use-doc-layer \
-    --no-bow-reconstruction-loss \
-    --doc-reconstruction-weight 0.5 \
-    --doc-reconstruction-temp 1.0 \
-    --doc-reconstruction-logit-clipping 10.0 \
-    -o ./outputs/imdb
+## 4. Konwledge Distillation 
+```
+python multiple_run_scholar.py $(cat args/imdb/wiki_kd.txt)
 ```
 
