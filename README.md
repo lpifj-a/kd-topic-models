@@ -47,11 +47,11 @@ python scholar/run_scholar.py ./data/wiki20200501/processed-dev  -k 500 --emb-di
 python scholar/init_embeddings.py data/imdb/processed-dev/train.vocab.json  --teacher-vocab data/wiki20200501/processed-dev/train.vocab.json  --model-file outputs/wiki_topic_500_emb_dim_500/torch_model_epoch_100.pt  -o ./scholar/outputs/imdb/wiki_topic_500_emb_500_epoch_100
 ```
 ```
-python multiple_run_scholar.py $(cat args/imdb/scholar_wiki.txt)
+python multiple_run_scholar.py $(cat ~/kd-topic-models/args/imdb/scholar_wiki.txt)
 ```
 
 ## 4. Konwledge Distillation 
 ```
-python multiple_run_scholar.py $(cat args/imdb/wiki_kd.txt)
+python multiple_run_scholar.py $(cat ~/kd-topic-models/args/imdb/wiki_kd.txt)
 ```
 
