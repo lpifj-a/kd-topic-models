@@ -1,0 +1,16 @@
+/home/watanabe/kd-topic-models/data/imdb/processed-dev 
+--dev-metric npmi 
+-k 50  
+--epochs 500  
+--patience 50 
+--batch-size 200 
+--device 0 
+--dev-prefix test 
+-l 0.002 
+--alpha 0.5 
+--eta-bn-anneal-step-const 0.25 
+--background-embeddings 
+-o /home/watanabe/kd-topic-models/outputs/imdb/test
+--runs 5  
+--ext-counts-fpath /home/watanabe/kd-topic-models/data/gigaword/processed/train.npz  
+--ext-vocab-fpath /home/watanabe/kd-topic-models/data/gigaword/processed/train.vocab.json

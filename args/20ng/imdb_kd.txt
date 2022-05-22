@@ -1,0 +1,21 @@
+/home/watanabe/kd-topic-models/data/20ng/aligned 
+--dev-metric npmi
+-k 50 
+--epochs 500 
+--patience 100 
+--batch-size 200 
+--background-embeddings 
+--device 0 
+--dev-prefix test 
+-l 0.002 
+--alpha 0.5 
+--eta-bn-anneal-step-const 0.25 
+--teacher-eta-dirs /home/watanabe/kd-topic-models/outputs/teacher_20ng/test/imdb_117981
+--use-pseudo-doc 
+--no-bow-reconstruction-loss 
+--doc-reconstruction-weight-list 0.94
+--doc-reconstruction-temp-list 2
+--runs 5  
+--ext-counts-fpath /home/watanabe/kd-topic-models/data/gigaword/processed/train.npz  
+--ext-vocab-fpath /home/watanabe/kd-topic-models/data/gigaword/processed/train.vocab.json
+-o /home/watanabe/kd-topic-models/outputs/kd_20ng/test/imdb
