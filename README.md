@@ -2,7 +2,7 @@
 
 # Rough Steps
 
-## 1. Create conda environment
+## 1. Create conda environment (which is a modification of [Scholar+BAT](https://github.com/ahoho/kd-topic-models))
 ```
 conda env create -f scholar/scholar.yml
 ```
@@ -47,11 +47,42 @@ python scholar/run_scholar.py ./data/wiki20200501/processed-dev  -k 500 --emb-di
 python scholar/init_embeddings.py data/imdb/processed-dev/train.vocab.json  --teacher-vocab data/wiki20200501/processed-dev/train.vocab.json  --model-file outputs/wiki_topic_500_emb_dim_500/torch_model_epoch_100.pt  -o ./scholar/outputs/imdb/wiki_topic_500_emb_500_epoch_100
 ```
 ```
-python multiple_run_scholar.py $(cat ~/kd-topic-models/args/imdb/scholar_wiki.txt)
+python scholar/run_scholar.py 
+./data/imdb/processed-dev 
+--dev-metric npmi -k 50  
+--epochs 500  
+--patience 50 
+--batch-size 200 
+--background-embeddings scholar/outputs/imdb/wiki_topic_500_emb_500_epoch_100/pretrained_emb.npy  
+--device 0 
+--dev-prefix test 
+-l 0.002 
+--alpha 0.5 
+--eta-bn-anneal-step-const 0.25 
+-o ./outputs/teacher_imdb/test/topic_500_emb_500_epoch_100
+--save-eta  
 ```
 
 ## 4. Konwledge Distillation 
 ```
-python multiple_run_scholar.py $(cat ~/kd-topic-models/args/imdb/wiki_kd.txt)
+python scholar/run_scholar.py
+./data/imdb/processed-dev
+--dev-metric npmi 
+-k 50 
+--epochs 500 
+--patience 50 
+--batch-size 200 
+--background-embeddings 
+--device 0 
+--dev-prefix test 
+-l 0.002 
+--alpha 0.5 
+--eta-bn-anneal-step-const 0.25 
+--teacher-eta-dirs ./outputs/teacher_imdb/test/topic_500_emb_500_epoch_100
+--no-bow-reconstruction-loss 
+--doc-reconstruction-weight-list 0.97
+--doc-reconstruction-temp-list 2.0
+-o ./outputs/kd_imdb/test/topic_500_emb_500_epoch_100
+--use-pseudo-doc
 ```
 
