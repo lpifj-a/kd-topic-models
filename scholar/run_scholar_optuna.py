@@ -378,6 +378,21 @@ def main(call=None):
         default=None,
         help="Save models for a certain number of epochs",
     )
+    parser.add_argument(
+        "--storage",
+        dest="storage",
+        type=str,
+        default=None,
+        help="Database name",
+    )
+    parser.add_argument(
+        "--study-name",
+        dest="study_name",
+        type=str,
+        default=None,
+        help="Study name",
+    )
+
 
     options = parser.parse_args(call)
 
@@ -666,8 +681,8 @@ def main(call=None):
         # sqliteのデータベースにログを保存
         # direction で目的変数の最大化
         study = optuna.create_study(
-            storage="sqlite:///kd_imdb.db",
-            study_name="kd_imdb_params",
+            storage="sqlite:///" + options.storage,
+            study_name=options.study_name,
             load_if_exists=True,
             direction='maximize',
             )
@@ -947,8 +962,8 @@ def objective(
         # 複数教師の場合は動かない
         if num_teachers >=2 : print("今は対応していません")
         for i in range(num_teachers):
-            doc_reconstruction_weight_list.append(trial.suggest_float("doc_reconstruction_weight"+str(i),0.1,0.9,step=0.1))
-            doc_reconstruction_temp_list.append(trial.suggest_float("doc_reconstruction_temp"+str(i),1,3,step=0.1))
+            doc_reconstruction_weight_list.append(trial.suggest_uniform("teacher_weight"+str(i),0.1,0.99))
+            doc_reconstruction_temp_list.append(trial.suggest_uniform("softmax_temp"+str(i),1,3))
 
 
         model = Scholar(
