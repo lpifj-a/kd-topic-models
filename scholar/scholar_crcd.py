@@ -105,6 +105,7 @@ class Scholar(object):
         l1_beta_c=None,
         l1_beta_ci=None,
         teacher_emb=None,
+        teacher_emb_contrast=None,
         positive_idx=None,
         contrast_idx=None
     ):
@@ -137,6 +138,8 @@ class Scholar(object):
 
         if teacher_emb is not None:
             teacher_emb = torch.Tensor(teacher_emb).to(self.device)
+        if teacher_emb_contrast is not None:
+            teacher_emb_contrast = torch.Tensor(teacher_emb_contrast).to(self.device)
         if positive_idx is not None:
             positive_idx  = torch.Tensor(positive_idx).to(self.device)
         if contrast_idx is not None:
@@ -157,6 +160,7 @@ class Scholar(object):
             l1_beta_c=l1_beta_c,
             l1_beta_ci=l1_beta_ci,
             teacher_emb=teacher_emb,
+            teacher_emb_contrast=teacher_emb_contrast,
             positive_idx=positive_idx,
             contrast_idx=contrast_idx
         )
@@ -593,27 +597,26 @@ class torchScholar(nn.Module):
         self.prior_logvar = torch.from_numpy(prior_logvar).to(self.device)
         self.prior_logvar.requires_grad = False
 
-        # crcd
-
+        # Contrastive learning
         # Relation network
-        self.linear_s_Mts = nn.Linear(self.n_topics, s_dim_out) # 入力はL2正規化された生徒モデルの出力
-        self.linear_t_Mts = nn.Linear(t_dim_in, t_dim_out) 
-        self.linear_s_Mt = nn.Linear(s_dim_in, s_dim_out) 
-        self.linear_t_Mt = nn.Linear(t_dim_in, t_dim_out) 
+        # 入力はL2正規化された教師，生徒モデルの出力
+        self.linear_s_Mts = nn.Linear(self.n_topics, 64) # 50, 64
+        self.linear_t_Mts = nn.Linear(self.teacher_emb_dim, 64) # 1024, 64
+        self.linear_s_Mt = nn.Linear(self.n_topics, 64) 
+        self.linear_t_Mt = nn.Linear(self.teacher_emb_dim, 64) 
 
         self.sub_net_Mts = nn.Sequential(
             nn.ReLU(inplace=True),
-            nn.Linear(in_dim, out_dim, bias=False)
+            nn.Linear(64, 128, bias=False)
         ) 
         self.sub_net_Mt = nn.Sequential(
             nn.ReLU(inplace=True),
-            nn.Linear(in_dim, out_dim, bias=False)
+            nn.Linear(64, 128, bias=False)
         ) 
 
         # Critic function
-        self.critic_h1 = nn.Linear(in_dim, out_dim)
-        self.critic_h2 = nn.Linear(in_dim, out_dim)
-
+        self.critic_h1 = nn.Linear(128, 256)
+        self.critic_h2 = nn.Linear(128, 256)
 
 
     def forward(
@@ -632,6 +635,7 @@ class torchScholar(nn.Module):
         l1_beta_c=None,
         l1_beta_ci=None,
         teacher_emb=None,
+        teacher_emb_contrast=None,
         positive_idx=None,
         contrast_idx=None
     ):
@@ -653,6 +657,8 @@ class torchScholar(nn.Module):
         :return: document representation; reconstruction; label probs; (loss, if requested)
         """
         en0_x = []
+
+        batch_size = X.shape[1]
 
         deviation_covar_idx = 0
         for emb_name, embedding in self.embeddings_x.items():
@@ -766,8 +772,6 @@ class torchScholar(nn.Module):
                 + (1.0 - eta_bn_prop) * F.softmax(eta / t, dim=1) 
                 )
         
-
-        
         # predict labels
         Y_recon = None
         if self.n_labels > 0:
@@ -810,8 +814,38 @@ class torchScholar(nn.Module):
             prior_mean = self.prior_mean.expand_as(posterior_mean)
             prior_logvar = self.prior_logvar.expand_as(posterior_logvar)
 
-        # crcd
-        # 
+
+        # Contrastive learning
+
+        # L2 normalization
+        teacher_emb = F.normalize(teacher_emb, p=2, dim=1) 
+        teacher_emb_contrast = F.normalize(teacher_emb_contrast, p=2, dim=1) # weight_v2 (batch_size*501, 1024)
+        z_do = F.normalize(z_do, p=2, dim=1) 
+        
+        # compute anchor-student relation
+        f_t_Mts = self.linear_t_Mts(teacher_emb) # anchor_v2  (batch_size, 64)
+        f_s_Mts = self.linear_s_Mts(z_do) #  batch_size, 64
+
+        anchor_student_relation = f_s_Mts.unsqueeze(1) - f_t_Mts.unsqueeze(0) + 1e-6 
+        anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
+        anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
+
+        # critic function
+        anchor_student_relation = self.critic_h2(anchor_student_relation) # batch_size*batch_size, 256
+        anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
+        anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
+        
+
+        # compute anchor-teacher relation
+        f_t_Mt = self.linear_t_Mt(teacher_emb) # anchor_v2  (batch_size, 64)
+        f_t_contrast_Mt = self.linear_t_Mt(teacher_emb_contrast) # batch_size*501, 64
+        f_t_contrast_Mt = f_t_contrast_Mt.view(batch_size, 500 + 1, self.teacher_emb_dim) # batch_size, 501, 64
+
+        anchor_teacher_relation = f_t_contrast_Mt.unsqueeze(1) - f_t_Mt.unsqueeze(1).unsqueeze(0) 
+        anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
+        anchor_teacher_relation = self.sub_net_Mt(anchor_teacher_relation) # sub_net_Mtの次元と合わないかも
+        
+
 
 
         if compute_loss:
@@ -843,6 +877,7 @@ class torchScholar(nn.Module):
             )
         else:
             return eta, theta, X_recon, Y_recon
+
 
     def _loss(
         self,

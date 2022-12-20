@@ -1270,7 +1270,7 @@ def train(
         # Loop over all batches
         for i in tqdm(range(total_batch)):
             # get a minibatch
-            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, positive_idx, contrast_idx = next(mb_gen)
+            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast, positive_idx, contrast_idx = next(mb_gen)
             # do one minibatch update
             eta, cost, recon_y, thetas, nl, kld = model.fit(
                 batch_xs,
@@ -1284,6 +1284,7 @@ def train(
                 l1_beta_c=l1_beta_c,
                 l1_beta_ci=l1_beta_ci,
                 teacher_emb=batch_teacher_emb,
+                batch_teacher_emb_contrast=batch_teacher_emb_contrast,
                 positive_idx = positive_idx,
                 contrast_idx = contrast_idx
             )
@@ -1480,7 +1481,6 @@ def create_minibatch(X, Y, PC, TC, DR, TE_list, teacher_emb=None, batch_size=200
         for i in range(len(ixs)):
             contrast_idx[i] = np.concatenate([ixs[i]],negative_idx)
         contrast_idx = contrast_idx.astype("int64")
-            
 
         X_mb = X[ixs, :].astype("float32")
         X_mb = X_mb.todense()
@@ -1513,11 +1513,14 @@ def create_minibatch(X, Y, PC, TC, DR, TE_list, teacher_emb=None, batch_size=200
 
         if teacher_emb is not None:
             teacher_emb = teacher_emb[ixs, :].astype("float32")
+            teacher_emb_contrast = teacher_emb[contrast_idx.view(-1), :].astype("float32")
         else:
             teacher_emb=None
+            teacher_emb_contrast=None
 
 
-        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb_list, teacher_emb, ixs, contrast_idx
+
+        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb_list, teacher_emb, teacher_emb_contrast, ixs, contrast_idx, 
 
 
 def get_minibatch(X, Y, PC, TC, DR, TE_list, batch, batch_size=200):
