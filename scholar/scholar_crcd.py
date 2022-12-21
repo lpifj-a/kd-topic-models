@@ -5,9 +5,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.init import kaiming_uniform_, xavier_uniform_
 
-from criterion import CRCDLoss
-
-
 
 class Scholar(object):
     def __init__(
@@ -164,7 +161,7 @@ class Scholar(object):
             positive_idx=positive_idx,
             contrast_idx=contrast_idx
         )
-        loss, nl, kld = losses
+        loss, nl, kld, contrast = losses
         # update model
         loss.backward()
         self.optimizer.step()
@@ -178,6 +175,7 @@ class Scholar(object):
             thetas.to("cpu").detach().numpy(),
             nl.to("cpu").detach().numpy(),
             kld.to("cpu").detach().numpy(),
+            contrast.to("cpu").detach().numpy(),
         )
 
     def predict(self, X, PC, TC, DR, TE_list, eta_bn_prop=0.0):
@@ -256,13 +254,13 @@ class Scholar(object):
             _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
             )
-            loss, NL, KLD = temp
+            loss, NL, KLD, contrast = temp
             losses = loss.to("cpu").detach().numpy()
         else:
             _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=1.0, eta_bn_prop=eta_bn_prop
             )
-            loss, NL, KLD = temp
+            loss, NL, KLD, contrast = temp
             losses = loss.to("cpu").detach().numpy()
             for s in range(1, n_samples):
                 _, _, _, _, temp = self._model(
@@ -276,7 +274,7 @@ class Scholar(object):
                     var_scale=1.0,
                     eta_bn_prop=eta_bn_prop,
                 )
-                loss, NL, KLD = temp
+                loss, NL, KLD, contrast = temp
                 losses += loss.to("cpu").detach().numpy()
             losses /= np.float32(n_samples)
 
@@ -458,7 +456,7 @@ class torchScholar(nn.Module):
         self.classify_from_covars = classify_from_covars
         self.classify_from_topics = classify_from_topics
         self.classify_from_doc_reps = classify_from_doc_reps
-        self.teacher_emb_dim = confing["teacher_emb_dim"]
+        self.teacher_emb_dim = config["teacher_emb_dim"]
 
         # create a layer for prior covariates to influence the document prior
         if self.n_prior_covars > 0:
@@ -816,36 +814,47 @@ class torchScholar(nn.Module):
 
 
         # Contrastive learning
+        if teacher_emb is not None:
 
-        # L2 normalization
-        teacher_emb = F.normalize(teacher_emb, p=2, dim=1) 
-        teacher_emb_contrast = F.normalize(teacher_emb_contrast, p=2, dim=1) # weight_v2 (batch_size*501, 1024)
-        z_do = F.normalize(z_do, p=2, dim=1) 
-        
-        # compute anchor-student relation
-        f_t_Mts = self.linear_t_Mts(teacher_emb) # anchor_v2  (batch_size, 64)
-        f_s_Mts = self.linear_s_Mts(z_do) #  batch_size, 64
+            # L2 normalization
+            teacher_emb = F.normalize(teacher_emb, p=2, dim=1) 
+            teacher_emb_contrast = F.normalize(teacher_emb_contrast, p=2, dim=1) # weight_v2 (batch_size*501, 1024)
+            z_do = F.normalize(z_do, p=2, dim=1) 
+            
+            # compute anchor-student relation
+            f_t_Mts = self.linear_t_Mts(teacher_emb) # anchor_v2  (batch_size, 64)
+            f_s_Mts = self.linear_s_Mts(z_do) #  batch_size, 64
 
-        anchor_student_relation = f_s_Mts.unsqueeze(1) - f_t_Mts.unsqueeze(0) + 1e-6 
-        anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
-        anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
+            anchor_student_relation = f_s_Mts.unsqueeze(1) - f_t_Mts.unsqueeze(0) + 1e-6 
+            anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
+            anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
 
-        # critic function
-        anchor_student_relation = self.critic_h2(anchor_student_relation) # batch_size*batch_size, 256
-        anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
-        anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
-        
+            # linear transformation h2
+            anchor_student_relation = self.critic_h2(anchor_student_relation) # batch_size*batch_size, 256
+            anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
+            anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
+            
 
-        # compute anchor-teacher relation
-        f_t_Mt = self.linear_t_Mt(teacher_emb) # anchor_v2  (batch_size, 64)
-        f_t_contrast_Mt = self.linear_t_Mt(teacher_emb_contrast) # batch_size*501, 64
-        f_t_contrast_Mt = f_t_contrast_Mt.view(batch_size, 500 + 1, self.teacher_emb_dim) # batch_size, 501, 64
+            # compute anchor-teacher relation
+            f_t_Mt = self.linear_t_Mt(teacher_emb) # anchor_v2  (batch_size, 64)
+            f_t_contrast_Mt = self.linear_t_Mt(teacher_emb_contrast) # batch_size*501, 64
+            f_t_contrast_Mt = f_t_contrast_Mt.view(batch_size, 500 + 1, self.teacher_emb_dim) # batch_size, 501, 64
 
-        anchor_teacher_relation = f_t_contrast_Mt.unsqueeze(1) - f_t_Mt.unsqueeze(1).unsqueeze(0) 
-        anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
-        anchor_teacher_relation = self.sub_net_Mt(anchor_teacher_relation) # sub_net_Mtの次元と合わないかも
-        
+            anchor_teacher_relation = f_t_contrast_Mt.unsqueeze(1) - f_t_Mt.unsqueeze(1).unsqueeze(0) 
+            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
+            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size*501, 64) # 次元を合わせる
+            anchor_teacher_relation = self.sub_net_Mt(anchor_teacher_relation)  # batch_size*batch_size*501, 128
+            
+            # linear transformation h1
+            anchor_teacher_relation = self.critic_h1(anchor_teacher_relation) # batch_size*batch_size*501, 256
+            anchor_teacher_relation = F.normalize(anchor_teacher_relation, p=2, dim=1)
+            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
 
+
+            # critic function
+            out = torch.bmm(anchor_student_relation,anchor_teacher_relation)
+            out = torch.exp(torch.div(out, 0.05))
+            out = torch.div(out,torch.exp(1/0.05))
 
 
         if compute_loss:
@@ -870,9 +879,7 @@ class torchScholar(nn.Module):
                     l1_beta,
                     l1_beta_c,
                     l1_beta_ci,
-                    teacher_emb,
-                    positive_idx,
-                    contrast_idx
+                    out
                 ),
             )
         else:
@@ -896,9 +903,7 @@ class torchScholar(nn.Module):
         l1_beta=None,
         l1_beta_c=None,
         l1_beta_ci=None,
-        teacher_emb=None,
-        positive_idx=None,
-        contrast_idx=None,
+        out=None
     ):
 
         NL = 0.
@@ -977,12 +982,32 @@ class torchScholar(nn.Module):
             loss += (
                 self.l1_beta_ci_reg * (l1_strengths_beta_ci * beta_ci_weights_sq).sum()
             )
+        
+        # contrastive loss
+        if out is not None:
+            eps = 1e-7
+            bsz = out.shape[0]
+            m = out.size(1) - 1
+
+            # 'loss old'
+            # noise distribution
+            Pn = 1 / float(self.n_data)
+            # loss for positive pair
+            P_pos = out.select(1, 0)
+            log_D1 = torch.div(P_pos, P_pos.add(m * Pn + eps)).log_()
+            # loss for K negative pair
+            P_neg = out.narrow(1, 1, m)
+            log_D0 = torch.div(P_neg.clone().fill_(m * Pn), P_neg.add(m * Pn + eps)).log_()
+            crcd_loss = - (log_D1.sum(0) + log_D0.view(-1, 1).sum(0)) / bsz
+
+            loss += crcd_loss[-1]
+
 
         # average losses if desired
         if do_average:
             return loss.mean(), NL.mean(), KLD.mean()
         else:
-            return loss, NL, KLD
+            return loss, NL, KLD, crcd_loss[-1]
 
     def predict_from_theta(self, theta, PC, TC, DR, TE_list):
         # Predict labels from a distribution over topics

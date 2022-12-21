@@ -397,7 +397,7 @@ def main(call=None):
         seed = None
 
     # load the training data
-    train_X, vocab, train_row_selector, train_ids, positive_ids = load_word_counts(
+    train_X, vocab, train_row_selector, train_ids = load_word_counts(
         input_dir, options.train_prefix
     )
     train_labels, label_type, label_names, n_labels = load_labels(
@@ -1267,12 +1267,13 @@ def train(
         accuracy = 0.0
         avg_nl = 0.0
         avg_kld = 0.0
+        avg_contrast = 0.0
         # Loop over all batches
         for i in tqdm(range(total_batch)):
             # get a minibatch
             batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast, positive_idx, contrast_idx = next(mb_gen)
             # do one minibatch update
-            eta, cost, recon_y, thetas, nl, kld = model.fit(
+            eta, cost, recon_y, thetas, nl, kld, contrast = model.fit(
                 batch_xs,
                 batch_ys,
                 batch_pcs,
@@ -1299,6 +1300,7 @@ def train(
             avg_cost += float(cost) / n_train * batch_size
             avg_nl += float(nl) / n_train * batch_size
             avg_kld += float(kld) / n_train * batch_size
+            avg_contrast += float(contrast) / n_train * batch_size
             batches += 1
             if np.isnan(avg_cost):
                 print(epoch, i, np.sum(batch_xs, 1).astype(np.int), batch_xs.shape)
@@ -1348,6 +1350,7 @@ def train(
                 )
             else:
                 print("Epoch:", "%d" % epoch, "cost=", "{:.9f}".format(avg_cost))
+                print("nl=","{:.9f}".format(avg_nl), "kld=:","{:.9f}".format(avg_kld),"contrast","{:.9f}".format(avg_contrast))
                 sys.stdout.flush()
 
             # ある epoch ごとに model を保存
