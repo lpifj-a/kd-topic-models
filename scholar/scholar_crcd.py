@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.init import kaiming_uniform_, xavier_uniform_
+import math
 
 
 class Scholar(object):
@@ -103,8 +104,6 @@ class Scholar(object):
         l1_beta_ci=None,
         teacher_emb=None,
         teacher_emb_contrast=None,
-        positive_idx=None,
-        contrast_idx=None
     ):
         """
         Fit the model to a minibatch of data
@@ -137,10 +136,6 @@ class Scholar(object):
             teacher_emb = torch.Tensor(teacher_emb).to(self.device)
         if teacher_emb_contrast is not None:
             teacher_emb_contrast = torch.Tensor(teacher_emb_contrast).to(self.device)
-        if positive_idx is not None:
-            positive_idx  = torch.Tensor(positive_idx).to(self.device)
-        if contrast_idx is not None:
-            contrast_idx  = torch.Tensor(positive_idx).to(self.device)
 
         self.optimizer.zero_grad()
 
@@ -158,8 +153,6 @@ class Scholar(object):
             l1_beta_ci=l1_beta_ci,
             teacher_emb=teacher_emb,
             teacher_emb_contrast=teacher_emb_contrast,
-            positive_idx=positive_idx,
-            contrast_idx=contrast_idx
         )
         loss, nl, kld, contrast = losses
         # update model
@@ -238,6 +231,7 @@ class Scholar(object):
         if TE_list and batch_size == 1:
             for i,TE in enumerate(TE_list):
                 TE_list[i] = np.expand_dims(TE, axis=0)
+        
         X = torch.Tensor(X).to(self.device)
         if Y is not None:
             Y = torch.Tensor(Y).to(self.device)
@@ -250,6 +244,7 @@ class Scholar(object):
         if TE_list:
             for i,TE in enumerate(TE_list):
                 TE_list[i] = torch.Tensor(TE).to(self.device)
+       
         if n_samples == 0:
             _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
@@ -457,6 +452,7 @@ class torchScholar(nn.Module):
         self.classify_from_topics = classify_from_topics
         self.classify_from_doc_reps = classify_from_doc_reps
         self.teacher_emb_dim = config["teacher_emb_dim"]
+        self.n_data = config["n_data"]
 
         # create a layer for prior covariates to influence the document prior
         if self.n_prior_covars > 0:
@@ -634,8 +630,6 @@ class torchScholar(nn.Module):
         l1_beta_ci=None,
         teacher_emb=None,
         teacher_emb_contrast=None,
-        positive_idx=None,
-        contrast_idx=None
     ):
         """
         Do a forward pass of the model
@@ -655,8 +649,7 @@ class torchScholar(nn.Module):
         :return: document representation; reconstruction; label probs; (loss, if requested)
         """
         en0_x = []
-
-        batch_size = X.shape[1]
+        batch_size = X.shape[0]
 
         deviation_covar_idx = 0
         for emb_name, embedding in self.embeddings_x.items():
@@ -825,6 +818,7 @@ class torchScholar(nn.Module):
             f_t_Mts = self.linear_t_Mts(teacher_emb) # anchor_v2  (batch_size, 64)
             f_s_Mts = self.linear_s_Mts(z_do) #  batch_size, 64
 
+
             anchor_student_relation = f_s_Mts.unsqueeze(1) - f_t_Mts.unsqueeze(0) + 1e-6 
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
             anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
@@ -838,7 +832,7 @@ class torchScholar(nn.Module):
             # compute anchor-teacher relation
             f_t_Mt = self.linear_t_Mt(teacher_emb) # anchor_v2  (batch_size, 64)
             f_t_contrast_Mt = self.linear_t_Mt(teacher_emb_contrast) # batch_size*501, 64
-            f_t_contrast_Mt = f_t_contrast_Mt.view(batch_size, 500 + 1, self.teacher_emb_dim) # batch_size, 501, 64
+            f_t_contrast_Mt = f_t_contrast_Mt.view(batch_size, 500+1, 64) # batch_size, 501, 64
 
             anchor_teacher_relation = f_t_contrast_Mt.unsqueeze(1) - f_t_Mt.unsqueeze(1).unsqueeze(0) 
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
@@ -852,9 +846,11 @@ class torchScholar(nn.Module):
 
 
             # critic function
-            out = torch.bmm(anchor_student_relation,anchor_teacher_relation)
+            out = torch.bmm(anchor_teacher_relation, anchor_student_relation)
             out = torch.exp(torch.div(out, 0.05))
-            out = torch.div(out,torch.exp(1/0.05))
+            out = torch.div(out,math.exp(1/0.05))
+        else:
+            out = None
 
 
         if compute_loss:
@@ -997,17 +993,22 @@ class torchScholar(nn.Module):
             log_D1 = torch.div(P_pos, P_pos.add(m * Pn + eps)).log_()
             # loss for K negative pair
             P_neg = out.narrow(1, 1, m)
-            log_D0 = torch.div(P_neg.clone().fill_(m * Pn), P_neg.add(m * Pn + eps)).log_()
-            crcd_loss = - (log_D1.sum(0) + log_D0.view(-1, 1).sum(0)) / bsz
 
-            loss += crcd_loss[-1]
+            log_D0 = torch.div(P_neg.clone().fill_(m * Pn), P_neg.add(m * Pn + eps)).log_()
+           
+            crcd_loss = - (log_D1.sum(0) + log_D0.view(-1, 1).sum(0)) / bsz
+            crcd_loss = crcd_loss[0]
+
+            loss += crcd_loss
+        else:
+            crcd_loss = None
 
 
         # average losses if desired
         if do_average:
-            return loss.mean(), NL.mean(), KLD.mean()
+            return loss.mean(), NL.mean(), KLD.mean(), crcd_loss.mean()
         else:
-            return loss, NL, KLD, crcd_loss[-1]
+            return loss, NL, KLD, crcd_loss
 
     def predict_from_theta(self, theta, PC, TC, DR, TE_list):
         # Predict labels from a distribution over topics

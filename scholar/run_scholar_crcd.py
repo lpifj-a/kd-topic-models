@@ -615,6 +615,12 @@ def main(call=None):
     teacher_emb = np.load("teacher_emb//20ng/train_teacher_emb.npy")
     print("Teacher emb size:",teacher_emb.shape)
     teacher_emb_dim = teacher_emb.shape[1]
+    n_data = teacher_emb.shape[0]
+    isnan = np.isnan(teacher_emb).flatten()
+    if any(isnan):
+        print("There are NaN data in teacher embeddings")
+        print(np.unique(isnan, return_counts=True))
+        teacher_emb = np.nan_to_num(teacher_emb, nan=np.nanmean(teacher_emb))
 
 
     # combine the network configuration parameters into a dictionary
@@ -627,7 +633,8 @@ def main(call=None):
         n_topic_covars=n_topic_covars,
         doc_reps_dim=doc_reps_dim,
         teacher_eta_dim_list=teacher_eta_dim_list,
-        teacher_emb_dim=teacher_emb_dim
+        teacher_emb_dim=teacher_emb_dim,
+        n_data = n_data
     )
 
     print("Network architecture:")
@@ -1146,7 +1153,8 @@ def make_network(
     n_labels=0,
     n_prior_covars=0,
     n_topic_covars=0,
-    teacher_emb_dim=None
+    teacher_emb_dim=None,
+    n_data = None
 ):
     # Assemble the network configuration parameters into a dictionary
     network_architecture = dict(
@@ -1174,7 +1182,8 @@ def make_network(
         classifier_layers=1,
         classifier_loss_weight=options.classifier_loss_weight,
         use_interactions=options.interactions,
-        teacher_emb_dim=teacher_emb_dim
+        teacher_emb_dim=teacher_emb_dim,
+        n_data = n_data
     )
     return network_architecture
 
@@ -1271,7 +1280,7 @@ def train(
         # Loop over all batches
         for i in tqdm(range(total_batch)):
             # get a minibatch
-            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast, positive_idx, contrast_idx = next(mb_gen)
+            batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast = next(mb_gen)
             # do one minibatch update
             eta, cost, recon_y, thetas, nl, kld, contrast = model.fit(
                 batch_xs,
@@ -1285,9 +1294,7 @@ def train(
                 l1_beta_c=l1_beta_c,
                 l1_beta_ci=l1_beta_ci,
                 teacher_emb=batch_teacher_emb,
-                batch_teacher_emb_contrast=batch_teacher_emb_contrast,
-                positive_idx = positive_idx,
-                contrast_idx = contrast_idx
+                teacher_emb_contrast=batch_teacher_emb_contrast,
             )
 
             # compute accuracy on minibatch
@@ -1303,7 +1310,7 @@ def train(
             avg_contrast += float(contrast) / n_train * batch_size
             batches += 1
             if np.isnan(avg_cost):
-                print(epoch, i, np.sum(batch_xs, 1).astype(np.int), batch_xs.shape)
+                # print(epoch, i, np.sum(batch_xs, 1).astype(np.int), batch_xs.shape)
                 print(
                     "Encountered NaN, stopping training. Please check the learning_rate settings and the momentum."
                 )
@@ -1350,7 +1357,7 @@ def train(
                 )
             else:
                 print("Epoch:", "%d" % epoch, "cost=", "{:.9f}".format(avg_cost))
-                print("nl=","{:.9f}".format(avg_nl), "kld=:","{:.9f}".format(avg_kld),"contrast","{:.9f}".format(avg_contrast))
+                print("nl=","{:.9f}".format(avg_nl), "kld=","{:.9f}".format(avg_kld),"contrast=","{:.9f}".format(avg_contrast))
                 sys.stdout.flush()
 
             # ある epoch ごとに model を保存
@@ -1480,10 +1487,11 @@ def create_minibatch(X, Y, PC, TC, DR, TE_list, teacher_emb=None, batch_size=200
             negative_idx = np.random.choice(neg, 500)
 
         # negative index
-        contrast_idx = np.zeros((len(ixs),500))
+        contrast_idx = []
         for i in range(len(ixs)):
-            contrast_idx[i] = np.concatenate([ixs[i]],negative_idx)
-        contrast_idx = contrast_idx.astype("int64")
+            contrast_idx.append(np.insert(negative_idx, 0, ixs[i]))
+        contrast_idx = np.array(contrast_idx)
+        contrast_idx = contrast_idx.flatten()
 
         X_mb = X[ixs, :].astype("float32")
         X_mb = X_mb.todense()
@@ -1515,15 +1523,14 @@ def create_minibatch(X, Y, PC, TC, DR, TE_list, teacher_emb=None, batch_size=200
             TE_mb_list = []
 
         if teacher_emb is not None:
-            teacher_emb = teacher_emb[ixs, :].astype("float32")
-            teacher_emb_contrast = teacher_emb[contrast_idx.view(-1), :].astype("float32")
+            teacher_emb_mb = teacher_emb[ixs, :].astype("float32")
+            teacher_emb_contrast_mb = teacher_emb[contrast_idx, :].astype("float32")
         else:
-            teacher_emb=None
-            teacher_emb_contrast=None
+            teacher_emb_mb=None
+            teacher_emb_contrast_mb=None
 
 
-
-        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb_list, teacher_emb, teacher_emb_contrast, ixs, contrast_idx, 
+        yield X_mb, Y_mb, PC_mb, TC_mb, DR_mb, TE_mb_list, teacher_emb_mb, teacher_emb_contrast_mb
 
 
 def get_minibatch(X, Y, PC, TC, DR, TE_list, batch, batch_size=200):
