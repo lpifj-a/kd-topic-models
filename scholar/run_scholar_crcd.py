@@ -612,14 +612,20 @@ def main(call=None):
 
 
     # load teacher_embeddings for contrastive learning
-    teacher_emb = np.load("teacher_emb//20ng/train_teacher_emb.npy")
+    teacher_emb = np.load("teacher_emb/20ng/train_teacher_emb.npy")
     print("Teacher emb size:",teacher_emb.shape)
     teacher_emb_dim = teacher_emb.shape[1]
     n_data = teacher_emb.shape[0]
+
+    nan_count = 0
+    for emb in teacher_emb:
+        if any(np.isnan(emb)):
+            nan_count+=1
+
     isnan = np.isnan(teacher_emb).flatten()
     if any(isnan):
-        print("There are NaN data in teacher embeddings")
-        print(np.unique(isnan, return_counts=True))
+        print("There are NaN in teacher embeddings. Replacing NaN with mean.")
+        print("A number of NaN:",nan_count)
         teacher_emb = np.nan_to_num(teacher_emb, nan=np.nanmean(teacher_emb))
 
 
