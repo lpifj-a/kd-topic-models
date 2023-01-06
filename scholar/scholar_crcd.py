@@ -453,6 +453,7 @@ class torchScholar(nn.Module):
         self.classify_from_doc_reps = classify_from_doc_reps
         self.teacher_emb_dim = config["teacher_emb_dim"]
         self.n_data = config["n_data"]
+        self.crcd_weight = config["crcd_weight"]
 
         # create a layer for prior covariates to influence the document prior
         if self.n_prior_covars > 0:
@@ -925,7 +926,7 @@ class torchScholar(nn.Module):
                     X_soft = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
                     kd_loss += (alpha * t * t) * -(X_soft * (X_soft_recon + 1e-10).log()).sum(1)
 
-            standard_loss = (1 - sum(alpha_list)) * -(X * (X_recon + 1e-10).log()).sum(1)
+            standard_loss = (1 - sum(alpha_list)) * -(X * (X_recon + 1e-10).log()).sum(1) # reconstruction loss
 
             # overwrite the NL loss (more of a safeguard than anything)
             NL = kd_loss + standard_loss
@@ -999,7 +1000,7 @@ class torchScholar(nn.Module):
             crcd_loss = - (log_D1.sum(0) + log_D0.view(-1, 1).sum(0)) / bsz
             crcd_loss = crcd_loss[0]
 
-            loss += crcd_loss
+            loss += self.crcd_weight*crcd_loss
         else:
             crcd_loss = None
 

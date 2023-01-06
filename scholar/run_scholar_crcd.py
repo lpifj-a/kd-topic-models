@@ -375,6 +375,19 @@ def main(call=None):
         default=None,
         help="Save models for a certain number of epochs",
     )
+    parser.add_argument(
+        "--teacher-embedding-dir",
+        dest="teacher_embedding",
+        type=str,
+        help="Teacher embedding file",
+    )
+    parser.add_argument(
+        "--crcd-weight",
+        type=float,
+        default=1.0,
+        help="Weight for CRCD",
+    )
+    
 
     options = parser.parse_args(call)
 
@@ -611,15 +624,21 @@ def main(call=None):
         init_bg = np.zeros_like(init_bg)
 
 
-    # load teacher_embeddings for contrastive learning
-    teacher_emb = np.load("teacher_emb//20ng/train_teacher_emb.npy")
+    # load teacher_embedding for contrastive learning
+    teacher_emb = np.load(options.teacher_embedding)
     print("Teacher emb size:",teacher_emb.shape)
     teacher_emb_dim = teacher_emb.shape[1]
     n_data = teacher_emb.shape[0]
+
+    nan_count = 0
+    for emb in teacher_emb:
+        if any(np.isnan(emb)):
+            nan_count+=1
+
     isnan = np.isnan(teacher_emb).flatten()
     if any(isnan):
-        print("There are NaN data in teacher embeddings")
-        print(np.unique(isnan, return_counts=True))
+        print("There are NaN in teacher embeddings. Replacing NaN with mean.")
+        print("A number of NaN:",nan_count)
         teacher_emb = np.nan_to_num(teacher_emb, nan=np.nanmean(teacher_emb))
 
 
@@ -1183,7 +1202,8 @@ def make_network(
         classifier_loss_weight=options.classifier_loss_weight,
         use_interactions=options.interactions,
         teacher_emb_dim=teacher_emb_dim,
-        n_data = n_data
+        n_data = n_data,
+        crcd_weight = options.crcd_weight
     )
     return network_architecture
 
