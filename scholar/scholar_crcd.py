@@ -140,7 +140,7 @@ class Scholar(object):
         self.optimizer.zero_grad()
 
         # do a forward pass
-        eta, thetas, X_recon, Y_probs, losses = self._model(
+        z, eta, thetas, X_recon, Y_probs, losses = self._model(
             X,
             Y,
             PC,
@@ -161,14 +161,17 @@ class Scholar(object):
 
         if Y_probs is not None:
             Y_probs = Y_probs.to("cpu").detach().numpy()
+        if contrast is not None:
+            contrast.to("cpu").detach().numpy()
         return (
+            z.to("cpu").detach().numpy(),
             eta.to("cpu").detach().numpy(),
             loss.to("cpu").detach().numpy(),
             Y_probs,
             thetas.to("cpu").detach().numpy(),
             nl.to("cpu").detach().numpy(),
             kld.to("cpu").detach().numpy(),
-            contrast.to("cpu").detach().numpy(),
+            contrast,
         )
 
     def predict(self, X, PC, TC, DR, TE_list, eta_bn_prop=0.0):
@@ -191,7 +194,7 @@ class Scholar(object):
         if TE_list:
             for i,TE in enumerate(TE_list):
                 TE_list[i] = torch.Tensor(TE).to(self.device)
-        _, theta, _, Y_recon, _ = self._model(
+        _, _, theta, _, Y_recon, _ = self._model(
             X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
         )
         return theta, Y_recon.to("cpu").detach().numpy()
@@ -246,19 +249,19 @@ class Scholar(object):
                 TE_list[i] = torch.Tensor(TE).to(self.device)
        
         if n_samples == 0:
-            _, _, _, _, temp = self._model(
+            _, _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
             )
             loss, NL, KLD, contrast = temp
             losses = loss.to("cpu").detach().numpy()
         else:
-            _, _, _, _, temp = self._model(
+            _, _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=1.0, eta_bn_prop=eta_bn_prop
             )
             loss, NL, KLD, contrast = temp
             losses = loss.to("cpu").detach().numpy()
             for s in range(1, n_samples):
-                _, _, _, _, temp = self._model(
+                _, _, _, _, _, temp = self._model(
                     X,
                     Y,
                     PC,
@@ -306,7 +309,7 @@ class Scholar(object):
         if TE_list:
             for i,TE in enumerate(TE_list):
                 TE_list[i] = torch.Tensor(TE).to(self.device)
-        _, theta, _, _, _ = self._model(
+        _, _, theta, _, _, _ = self._model(
             X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
         )
 
@@ -344,11 +347,50 @@ class Scholar(object):
         if TE_list:
             for i,TE in enumerate(TE_list):
                 TE_list[i] = torch.Tensor(TE).to(self.device)
-        eta, _, _, _, _ = self._model(
+        _, eta, _, _, _, _ = self._model(
             X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
         )
 
         return eta.to("cpu").detach().numpy()
+
+
+    def compute_z(self, X, Y, PC, TC, DR, TE_list, eta_bn_prop=0.0):
+        """
+        Return the latent document representation z for a given batch of X, Y, PC, and TC
+        """
+        batch_size = self.get_batch_size(X)
+        if batch_size == 1:
+            X = np.expand_dims(X, axis=0)
+        if Y is not None and batch_size == 1:
+            Y = np.expand_dims(Y, axis=0)
+        if PC is not None and batch_size == 1:
+            PC = np.expand_dims(PC, axis=0)
+        if TC is not None and batch_size == 1:
+            TC = np.expand_dims(TC, axis=0)
+        if DR is not None and batch_size == 1:
+            DR = np.expand_dims(DR, axis=0)
+        if TE_list and batch_size == 1:
+            for i,TE in enumerate(TE_list):
+                TE_list[i] = np.expand_dims(TE, axis=0)
+
+        X = torch.Tensor(X).to(self.device)
+        if Y is not None:
+            Y = torch.Tensor(Y).to(self.device)
+        if PC is not None:
+            PC = torch.Tensor(PC).to(self.device)
+        if TC is not None:
+            TC = torch.Tensor(TC).to(self.device)
+        if DR is not None:
+            DR = torch.Tensor(DR).to(self.device)
+        if TE_list:
+            for i,TE in enumerate(TE_list):
+                TE_list[i] = torch.Tensor(TE).to(self.device)
+        z, _, _, _, _, _ = self._model(
+            X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
+        )
+
+        return z.to("cpu").detach().numpy()
+
 
     def get_weights(self):
         """
@@ -593,25 +635,26 @@ class torchScholar(nn.Module):
         self.prior_logvar.requires_grad = False
 
         # Contrastive learning
-        # Relation network
-        # 入力はL2正規化された教師，生徒モデルの出力
-        self.linear_s_Mts = nn.Linear(self.n_topics, 64) # 50, 64
-        self.linear_t_Mts = nn.Linear(self.teacher_emb_dim, 64) # 1024, 64
-        self.linear_s_Mt = nn.Linear(self.n_topics, 64) 
-        self.linear_t_Mt = nn.Linear(self.teacher_emb_dim, 64) 
+        if self.teacher_emb_dim is not None:
+            # Relation network
+            # 入力はL2正規化された教師，生徒モデルの出力
+            self.linear_s_Mts = nn.Linear(self.n_topics, 64) # 50, 64
+            self.linear_t_Mts = nn.Linear(self.teacher_emb_dim, 64) # 1024, 64
+            self.linear_s_Mt = nn.Linear(self.n_topics, 64) 
+            self.linear_t_Mt = nn.Linear(self.teacher_emb_dim, 64) 
 
-        self.sub_net_Mts = nn.Sequential(
-            nn.ReLU(inplace=True),
-            nn.Linear(64, 128, bias=False)
-        ) 
-        self.sub_net_Mt = nn.Sequential(
-            nn.ReLU(inplace=True),
-            nn.Linear(64, 128, bias=False)
-        ) 
+            self.sub_net_Mts = nn.Sequential(
+                nn.ReLU(inplace=True),
+                nn.Linear(64, 128, bias=False)
+            ) 
+            self.sub_net_Mt = nn.Sequential(
+                nn.ReLU(inplace=True),
+                nn.Linear(64, 128, bias=False)
+            ) 
 
-        # Critic function
-        self.critic_h1 = nn.Linear(128, 256)
-        self.critic_h2 = nn.Linear(128, 256)
+            # Critic function
+            self.critic_h1 = nn.Linear(128, 256)
+            self.critic_h2 = nn.Linear(128, 256)
 
 
     def forward(
@@ -856,6 +899,7 @@ class torchScholar(nn.Module):
 
         if compute_loss:
             return (
+                z_do,
                 eta,
                 theta,
                 X_recon,
@@ -880,7 +924,7 @@ class torchScholar(nn.Module):
                 ),
             )
         else:
-            return eta, theta, X_recon, Y_recon
+            return z_do, eta, theta, X_recon, Y_recon
 
 
     def _loss(
@@ -1007,7 +1051,10 @@ class torchScholar(nn.Module):
 
         # average losses if desired
         if do_average:
-            return loss.mean(), NL.mean(), KLD.mean(), crcd_loss.mean()
+            if crcd_loss is not None:
+                return loss.mean(), NL.mean(), KLD.mean(), crcd_loss.mean()
+            else:
+                return loss.mean(), NL.mean(), KLD.mean(), None
         else:
             return loss, NL, KLD, crcd_loss
 

@@ -355,6 +355,13 @@ def main(call=None):
         help="Save the eta in SCHOLAR",
     )
     parser.add_argument(
+        "--save-z",
+        action="store_true",
+        dest="save_z",
+        default=False,
+        help="Save the z in SCHOLAR",
+    )
+    parser.add_argument(
         "--teacher-eta-dirs",
         dest="teacher_eta_dirs",
         type=str,
@@ -379,6 +386,7 @@ def main(call=None):
         "--teacher-embedding-dir",
         dest="teacher_embedding",
         type=str,
+        default=None,
         help="Teacher embedding file",
     )
     parser.add_argument(
@@ -623,23 +631,27 @@ def main(call=None):
     if options.no_bg:
         init_bg = np.zeros_like(init_bg)
 
-
     # load teacher_embedding for contrastive learning
-    teacher_emb = np.load(options.teacher_embedding)
-    print("Teacher emb size:",teacher_emb.shape)
-    teacher_emb_dim = teacher_emb.shape[1]
-    n_data = teacher_emb.shape[0]
+    if options.teacher_embedding is not None:
+        teacher_emb = np.load(options.teacher_embedding)
+        print("Teacher emb size:",teacher_emb.shape)
+        teacher_emb_dim = teacher_emb.shape[1]
+        n_data = teacher_emb.shape[0]
 
-    nan_count = 0
-    for emb in teacher_emb:
-        if any(np.isnan(emb)):
-            nan_count+=1
+        nan_count = 0
+        for emb in teacher_emb:
+            if any(np.isnan(emb)):
+                nan_count+=1
 
-    isnan = np.isnan(teacher_emb).flatten()
-    if any(isnan):
-        print("There are NaN in teacher embeddings. Replacing NaN with mean.")
-        print("A number of NaN:",nan_count)
-        teacher_emb = np.nan_to_num(teacher_emb, nan=np.nanmean(teacher_emb))
+        isnan = np.isnan(teacher_emb).flatten()
+        if any(isnan):
+            print("There are NaN in teacher embeddings. Replacing NaN with mean.")
+            print("A number of NaN:",nan_count)
+            teacher_emb = np.nan_to_num(teacher_emb, nan=np.nanmean(teacher_emb))
+    else:
+        teacher_emb = None
+        teacher_emb_dim = None
+        n_data = None
 
 
     # combine the network configuration parameters into a dictionary
@@ -941,8 +953,53 @@ def main(call=None):
                 "test",
                 batch_size=options.batch_size,
             )
-        
+    # save the z in SCHOLAR 
+    if options.save_z :
+        print('Saving the z in SCHOLAR')
+        save_z(
+            model,
+            train_X,
+            train_labels,
+            train_prior_covars,
+            train_topic_covars,
+            train_doc_reps,
+            train_teacher_eta_list,
+            train_ids,
+            options.output_dir,
+            "train",
+            batch_size=options.batch_size,
+        )
 
+        if dev_X is not None:
+            save_z(
+                model,
+                dev_X,
+                dev_labels,
+                dev_prior_covars,
+                dev_topic_covars,
+                dev_doc_reps,
+                dev_teacher_eta_list,
+                dev_ids,
+                options.output_dir,
+                options.dev_prefix,
+                batch_size=options.batch_size,
+            )
+        
+        if n_test > 0:
+            save_z(
+                model,
+                test_X,
+                test_labels,
+                test_prior_covars,
+                test_topic_covars,
+                test_doc_reps,
+                test_teacher_eta_list,
+                test_ids,
+                options.output_dir,
+                "test",
+                batch_size=options.batch_size,
+            )
+        
 
 def load_word_counts(input_dir, input_prefix, vocab=None):
     print("Loading data")
@@ -1302,7 +1359,7 @@ def train(
             # get a minibatch
             batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast = next(mb_gen)
             # do one minibatch update
-            eta, cost, recon_y, thetas, nl, kld, contrast = model.fit(
+            z, eta, cost, recon_y, thetas, nl, kld, contrast = model.fit(
                 batch_xs,
                 batch_ys,
                 batch_pcs,
@@ -1327,7 +1384,10 @@ def train(
             avg_cost += float(cost) / n_train * batch_size
             avg_nl += float(nl) / n_train * batch_size
             avg_kld += float(kld) / n_train * batch_size
-            avg_contrast += float(contrast) / n_train * batch_size
+            if contrast is not None:
+                avg_contrast += float(contrast) / n_train * batch_size
+            else:
+                avg_contrast = 0
             batches += 1
             if np.isnan(avg_cost):
                 # print(epoch, i, np.sum(batch_xs, 1).astype(np.int), batch_xs.shape)
@@ -1942,6 +2002,29 @@ def save_etas(
     eta = np.vstack(etas)
     # print(eta.shape)
     np.save(os.path.join(output_dir, "eta." + partition + ".npy"), eta)
+
+
+def save_z(
+    model, X, Y, PC, TC, DR, TE_list, ids, output_dir, partition, batch_size=200
+):
+    # compute the mean of the posterior of the latent representation z for each documetn and save it
+    if Y is not None:
+        Y = np.zeros_like(Y)
+
+    n_items, _ = X.shape
+    n_batches = int(np.ceil(n_items / batch_size))
+    zs = []
+
+    for i in range(n_batches):
+        batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes = get_minibatch(
+            X, Y, PC, TC, DR, TE_list, i, batch_size
+        )
+        zs.append(
+            model.compute_z(batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes)
+        )
+    z = np.vstack(zs)
+    # print(eta.shape)
+    np.save(os.path.join(output_dir, "z." + partition + ".npy"), z)
 
 
 def save_scholar_model(options, model, epoch=0, dev_metrics={}, is_final=False):
