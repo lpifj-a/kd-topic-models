@@ -853,6 +853,10 @@ class torchScholar(nn.Module):
         # Contrastive learning
         if teacher_emb is not None:
 
+            pos_relation_idx = []
+            for k in range(batch_size):
+                pos_relation_idx.append(k*batch_size+k)
+
             # L2 normalization
             teacher_emb = F.normalize(teacher_emb, p=2, dim=1) 
             teacher_emb_contrast = F.normalize(teacher_emb_contrast, p=2, dim=1) # weight_v2 (batch_size*501, 1024)
@@ -871,6 +875,7 @@ class torchScholar(nn.Module):
             anchor_student_relation = self.critic_h2(anchor_student_relation) # batch_size*batch_size, 256
             anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
+            anchor_student_relation = anchor_student_relation[pos_relation_idx,:,:]
             
 
             # compute anchor-teacher relation
@@ -887,6 +892,8 @@ class torchScholar(nn.Module):
             anchor_teacher_relation = self.critic_h1(anchor_teacher_relation) # batch_size*batch_size*501, 256
             anchor_teacher_relation = F.normalize(anchor_teacher_relation, p=2, dim=1)
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
+            anchor_teacher_relation = anchor_teacher_relation[pos_relation_idx,:,:]
+
 
 
             # critic function
@@ -1030,18 +1037,15 @@ class torchScholar(nn.Module):
             bsz = out.shape[0]
             m = out.size(1) - 1
 
-            # 'loss old'
-            # noise distribution
-            Pn = 1 / float(self.n_data)
             # loss for positive pair
             P_pos = out.select(1, 0)
-            log_D1 = torch.div(P_pos, P_pos.add(m * Pn + eps)).log_()
-            # loss for K negative pair
+            log_P = torch.log(P_pos)
+            
+            # loss for negative pair
             P_neg = out.narrow(1, 1, m)
-
-            log_D0 = torch.div(P_neg.clone().fill_(m * Pn), P_neg.add(m * Pn + eps)).log_()
+            log_N = torch.log(1-P_neg) 
            
-            crcd_loss = - (log_D1.sum(0) + log_D0.view(-1, 1).sum(0)) / bsz
+            crcd_loss = - (log_P.sum(0) + m*log_N.view(-1, 1).sum(0)) 
             crcd_loss = crcd_loss[0]
 
             loss += self.crcd_weight*crcd_loss
