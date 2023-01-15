@@ -853,9 +853,9 @@ class torchScholar(nn.Module):
         # Contrastive learning
         if teacher_emb is not None:
 
-            pos_relation_idx = []
-            for k in range(batch_size):
-                pos_relation_idx.append(k*batch_size+k)
+            # pos_relation_idx = []
+            # for k in range(batch_size):
+            #    pos_relation_idx.append(k*batch_size+k)
 
             # L2 normalization
             teacher_emb = F.normalize(teacher_emb, p=2, dim=1) 
@@ -875,7 +875,7 @@ class torchScholar(nn.Module):
             anchor_student_relation = self.critic_h2(anchor_student_relation) # batch_size*batch_size, 256
             anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
-            anchor_student_relation = anchor_student_relation[pos_relation_idx,:,:]
+            # anchor_student_relation = anchor_student_relation[pos_relation_idx,:,:]
             
 
             # compute anchor-teacher relation
@@ -892,7 +892,7 @@ class torchScholar(nn.Module):
             anchor_teacher_relation = self.critic_h1(anchor_teacher_relation) # batch_size*batch_size*501, 256
             anchor_teacher_relation = F.normalize(anchor_teacher_relation, p=2, dim=1)
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
-            anchor_teacher_relation = anchor_teacher_relation[pos_relation_idx,:,:]
+            # anchor_teacher_relation = anchor_teacher_relation[pos_relation_idx,:,:]
 
 
 
@@ -1045,7 +1045,7 @@ class torchScholar(nn.Module):
             P_neg = out.narrow(1, 1, m)
             log_N = torch.log(1-P_neg) 
            
-            crcd_loss = - (log_P.sum(0) + m*log_N.view(-1, 1).sum(0)) 
+            crcd_loss = - (log_P.sum(0) + log_N.view(-1, 1).sum(0))/bsz
             crcd_loss = crcd_loss[0]
 
             loss += self.crcd_weight*crcd_loss
