@@ -645,11 +645,11 @@ class torchScholar(nn.Module):
 
             self.sub_net_Mts = nn.Sequential(
                 nn.ReLU(inplace=True),
-                nn.Linear(64, 128, bias=False)
+                nn.Linear(64, 128, bias=True)
             ) 
             self.sub_net_Mt = nn.Sequential(
                 nn.ReLU(inplace=True),
-                nn.Linear(64, 128, bias=False)
+                nn.Linear(64, 128, bias=True)
             ) 
 
             # Critic function
@@ -853,21 +853,24 @@ class torchScholar(nn.Module):
         # Contrastive learning
         if teacher_emb is not None:
 
-            # pos_relation_idx = []
-            # for k in range(batch_size):
-            #    pos_relation_idx.append(k*batch_size+k)
+            pos_relation_idx = []
+            for k in range(batch_size):
+                pos_relation_idx.append(k*batch_size+k)
 
             # L2 normalization
             teacher_emb = F.normalize(teacher_emb, p=2, dim=1) 
             teacher_emb_contrast = F.normalize(teacher_emb_contrast, p=2, dim=1) # weight_v2 (batch_size*501, 1024)
             z_do = F.normalize(z_do, p=2, dim=1) 
+
+
+            # (i) anchor: teacher model
             
-            # compute anchor-student relation
+            # anchor-student relation: r^{T,S}
             f_t_Mts = self.linear_t_Mts(teacher_emb) # anchor_v2  (batch_size, 64)
             f_s_Mts = self.linear_s_Mts(z_do) #  batch_size, 64
 
-
             anchor_student_relation = f_s_Mts.unsqueeze(1) - f_t_Mts.unsqueeze(0) + 1e-6 
+            # anchor_student_relation = f_s_Mts.unsqueeze(1) - f_s_Mts.unsqueeze(0) + 1e-6 # r^{S,S}
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
             anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
 
@@ -876,9 +879,8 @@ class torchScholar(nn.Module):
             anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
             # anchor_student_relation = anchor_student_relation[pos_relation_idx,:,:]
-            
 
-            # compute anchor-teacher relation
+            # anchor-teacher relation: r^{T}
             f_t_Mt = self.linear_t_Mt(teacher_emb) # anchor_v2  (batch_size, 64)
             f_t_contrast_Mt = self.linear_t_Mt(teacher_emb_contrast) # batch_size*501, 64
             f_t_contrast_Mt = f_t_contrast_Mt.view(batch_size, 500+1, 64) # batch_size, 501, 64
@@ -894,14 +896,50 @@ class torchScholar(nn.Module):
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
             # anchor_teacher_relation = anchor_teacher_relation[pos_relation_idx,:,:]
 
+            # critic function
+            out_1 = torch.bmm(anchor_teacher_relation, anchor_student_relation)
+            out_1 = torch.exp(torch.div(out_1, 0.05))
+            out_1 = torch.div(out_1,math.exp(1/0.05))
 
+
+            # (ii) anchor: student model
+
+            # anchor-teacher relation: r^{T,S}
+            f_t_contrast_Mts = self.linear_t_Mts(teacher_emb_contrast) # batch_size*501, 64
+            f_t_contrast_Mts = f_t_contrast_Mts.view(batch_size, 500+1, 64) # batch_size, 501, 64
+
+            anchor_teacher_relation = f_t_contrast_Mts.unsqueeze(1) - f_s_Mts.unsqueeze(1).unsqueeze(0)
+            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
+            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size*501, 64) # 次元を合わせる
+            anchor_teacher_relation = self.sub_net_Mts(anchor_teacher_relation)  # batch_size*batch_size*501, 128
+            
+            # linear transformation h1
+            anchor_teacher_relation = self.critic_h1(anchor_teacher_relation) # batch_size*batch_size*501, 256
+            anchor_teacher_relation = F.normalize(anchor_teacher_relation, p=2, dim=1)
+            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
+            # anchor_teacher_relation = anchor_teacher_relation[pos_relation_idx,:,:]
+
+            # anchor-student relation: r^{T}
+            f_s_Mt = self.linear_s_Mt(z_do) #  batch_size, 64
+
+            anchor_student_relation = f_s_Mt.unsqueeze(1) - f_s_Mt.unsqueeze(0)
+            anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
+            anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
+
+            # linear transformation h2
+            anchor_student_relation = self.critic_h2(anchor_student_relation) # batch_size*batch_size, 256
+            anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
+            anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
+            # anchor_student_relation = anchor_student_relation[pos_relation_idx,:,:]
 
             # critic function
-            out = torch.bmm(anchor_teacher_relation, anchor_student_relation)
-            out = torch.exp(torch.div(out, 0.05))
-            out = torch.div(out,math.exp(1/0.05))
+            out_2 = torch.bmm(anchor_teacher_relation, anchor_student_relation)
+            out_2 = torch.exp(torch.div(out_2, 0.05))
+            out_2 = torch.div(out_2,math.exp(1/0.05))
+
         else:
-            out = None
+            out_1 = None
+            out_2 = None
 
 
         if compute_loss:
@@ -927,7 +965,8 @@ class torchScholar(nn.Module):
                     l1_beta,
                     l1_beta_c,
                     l1_beta_ci,
-                    out
+                    out_1,
+                    out_2
                 ),
             )
         else:
@@ -951,7 +990,8 @@ class torchScholar(nn.Module):
         l1_beta=None,
         l1_beta_c=None,
         l1_beta_ci=None,
-        out=None
+        out_1=None,
+        out_2=None
     ):
 
         NL = 0.
@@ -1030,33 +1070,43 @@ class torchScholar(nn.Module):
             loss += (
                 self.l1_beta_ci_reg * (l1_strengths_beta_ci * beta_ci_weights_sq).sum()
             )
-        
-        # contrastive loss
-        if out is not None:
+
+
+        def contrastive_loss(x):
             eps = 1e-7
-            bsz = out.shape[0]
-            m = out.size(1) - 1
+            bsz = x.shape[0]
+            m = x.size(1) - 1
 
             # loss for positive pair
-            P_pos = out.select(1, 0)
+            P_pos = x.select(1, 0)
             log_P = torch.log(P_pos)
-            
+
             # loss for negative pair
-            P_neg = out.narrow(1, 1, m)
+            P_neg = x.narrow(1, 1, m)
             log_N = torch.log(1-P_neg) 
-           
+            
             crcd_loss = - (log_P.sum(0) + log_N.view(-1, 1).sum(0))/bsz
             crcd_loss = crcd_loss[0]
 
+            return crcd_loss
+
+        # contrastive loss
+        if out_1 is not None:
+            s_loss = contrastive_loss(out_1)
+            t_loss = contrastive_loss(out_2)
+            crcd_loss = s_loss + t_loss
+            
             loss += self.crcd_weight*crcd_loss
+
         else:
             crcd_loss = None
+        
 
 
         # average losses if desired
         if do_average:
             if crcd_loss is not None:
-                return loss.mean(), NL.mean(), KLD.mean(), crcd_loss.mean()
+                return loss.mean(), NL.mean(), KLD.mean(), crcd_loss
             else:
                 return loss.mean(), NL.mean(), KLD.mean(), None
         else:
