@@ -638,10 +638,10 @@ class torchScholar(nn.Module):
         if self.teacher_emb_dim is not None:
             # Relation network
             # 入力はL2正規化された教師，生徒モデルの出力
-            self.linear_s_Mts = nn.Linear(self.n_topics, 64) # 50, 64
-            self.linear_t_Mts = nn.Linear(self.teacher_emb_dim, 64) # 1024, 64
-            self.linear_s_Mt = nn.Linear(self.n_topics, 64) 
-            self.linear_t_Mt = nn.Linear(self.teacher_emb_dim, 64) 
+            self.linear_s = nn.Linear(self.n_topics, 64) # 50, 64
+            self.linear_t = nn.Linear(self.teacher_emb_dim, 64) # 1024, 64
+
+            # (i) anchor: teacher
 
             self.sub_net_Mts = nn.Sequential(
                 nn.ReLU(inplace=True),
@@ -651,11 +651,25 @@ class torchScholar(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(64, 128, bias=True)
             ) 
-
             # Critic function
             self.critic_h1 = nn.Linear(128, 256)
             self.critic_h2 = nn.Linear(128, 256)
 
+
+            # (ii) anchor: student
+
+            self.sub_net_Mts_2 = nn.Sequential(
+                nn.ReLU(inplace=True),
+                nn.Linear(64, 128, bias=True)
+            ) 
+            self.sub_net_Mt_2 = nn.Sequential(
+                nn.ReLU(inplace=True),
+                nn.Linear(64, 128, bias=True)
+            ) 
+            # Critic function
+            self.critic_h1_2 = nn.Linear(128, 256)
+            self.critic_h2_2 = nn.Linear(128, 256)
+    
 
     def forward(
         self,
@@ -862,15 +876,17 @@ class torchScholar(nn.Module):
             teacher_emb_contrast = F.normalize(teacher_emb_contrast, p=2, dim=1) # weight_v2 (batch_size*501, 1024)
             z_do = F.normalize(z_do, p=2, dim=1) 
 
+            # linear transformation that can solve the dimension mismatch probrem
+            f_t = self.linear_t(teacher_emb) # anchor_v2  (batch_size, 64)
+            f_s = self.linear_s(z_do) #  batch_size, 64
+            f_t_contrast = self.linear_t(teacher_emb_contrast) # batch_size*501, 64
+            f_t_contrast = f_t_contrast.view(batch_size, 500+1, 64) # batch_size, 501, 64
+
 
             # (i) anchor: teacher model
             
             # anchor-student relation: r^{T,S}
-            f_t_Mts = self.linear_t_Mts(teacher_emb) # anchor_v2  (batch_size, 64)
-            f_s_Mts = self.linear_s_Mts(z_do) #  batch_size, 64
-
-            anchor_student_relation = f_s_Mts.unsqueeze(1) - f_t_Mts.unsqueeze(0) + 1e-6 
-            # anchor_student_relation = f_s_Mts.unsqueeze(1) - f_s_Mts.unsqueeze(0) + 1e-6 # r^{S,S}
+            anchor_student_relation = f_s.unsqueeze(1) - f_t.unsqueeze(0) + 1e-6 
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
             anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
 
@@ -881,11 +897,7 @@ class torchScholar(nn.Module):
             # anchor_student_relation = anchor_student_relation[pos_relation_idx,:,:]
 
             # anchor-teacher relation: r^{T}
-            f_t_Mt = self.linear_t_Mt(teacher_emb) # anchor_v2  (batch_size, 64)
-            f_t_contrast_Mt = self.linear_t_Mt(teacher_emb_contrast) # batch_size*501, 64
-            f_t_contrast_Mt = f_t_contrast_Mt.view(batch_size, 500+1, 64) # batch_size, 501, 64
-
-            anchor_teacher_relation = f_t_contrast_Mt.unsqueeze(1) - f_t_Mt.unsqueeze(1).unsqueeze(0) 
+            anchor_teacher_relation = f_t_contrast.unsqueeze(1) - f_t.unsqueeze(1).unsqueeze(0) 
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size*501, 64) # 次元を合わせる
             anchor_teacher_relation = self.sub_net_Mt(anchor_teacher_relation)  # batch_size*batch_size*501, 128
@@ -905,32 +917,25 @@ class torchScholar(nn.Module):
             # (ii) anchor: student model
 
             # anchor-teacher relation: r^{T,S}
-            f_t_contrast_Mts = self.linear_t_Mts(teacher_emb_contrast) # batch_size*501, 64
-            f_t_contrast_Mts = f_t_contrast_Mts.view(batch_size, 500+1, 64) # batch_size, 501, 64
-
-            anchor_teacher_relation = f_t_contrast_Mts.unsqueeze(1) - f_s_Mts.unsqueeze(1).unsqueeze(0)
+            anchor_teacher_relation = f_t_contrast.unsqueeze(1) - f_s.unsqueeze(1).unsqueeze(0)
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size*501, 64) # 次元を合わせる
-            anchor_teacher_relation = self.sub_net_Mts(anchor_teacher_relation)  # batch_size*batch_size*501, 128
+            anchor_teacher_relation = self.sub_net_Mts_2(anchor_teacher_relation)  # batch_size*batch_size*501, 128
             
             # linear transformation h1
-            anchor_teacher_relation = self.critic_h1(anchor_teacher_relation) # batch_size*batch_size*501, 256
+            anchor_teacher_relation = self.critic_h1_2(anchor_teacher_relation) # batch_size*batch_size*501, 256
             anchor_teacher_relation = F.normalize(anchor_teacher_relation, p=2, dim=1)
             anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
-            # anchor_teacher_relation = anchor_teacher_relation[pos_relation_idx,:,:]
 
             # anchor-student relation: r^{T}
-            f_s_Mt = self.linear_s_Mt(z_do) #  batch_size, 64
-
-            anchor_student_relation = f_s_Mt.unsqueeze(1) - f_s_Mt.unsqueeze(0)
+            anchor_student_relation = f_s.unsqueeze(1) - f_s.unsqueeze(0)
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
-            anchor_student_relation = self.sub_net_Mts(anchor_student_relation) # batch_size*batch_size, 128
+            anchor_student_relation = self.sub_net_Mt_2(anchor_student_relation) # batch_size*batch_size, 128
 
             # linear transformation h2
-            anchor_student_relation = self.critic_h2(anchor_student_relation) # batch_size*batch_size, 256
+            anchor_student_relation = self.critic_h2_2(anchor_student_relation) # batch_size*batch_size, 256
             anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
             anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
-            # anchor_student_relation = anchor_student_relation[pos_relation_idx,:,:]
 
             # critic function
             out_2 = torch.bmm(anchor_teacher_relation, anchor_student_relation)
@@ -998,6 +1003,7 @@ class torchScholar(nn.Module):
         # compute bag-of-words reconstruction loss
         if self.reconstruct_bow:
             NL += -(X * (X_recon + 1e-10).log()).sum(1)
+            reconstruction_loss = NL
 
         # knowledge distillation
         if X_soft_recon_list :
@@ -1079,11 +1085,11 @@ class torchScholar(nn.Module):
 
             # loss for positive pair
             P_pos = x.select(1, 0)
-            log_P = torch.log(P_pos)
+            log_P = torch.log(P_pos+eps)
 
             # loss for negative pair
             P_neg = x.narrow(1, 1, m)
-            log_N = torch.log(1-P_neg) 
+            log_N = torch.log(1-P_neg+eps) 
             
             crcd_loss = - (log_P.sum(0) + log_N.view(-1, 1).sum(0))/bsz
             crcd_loss = crcd_loss[0]
@@ -1092,10 +1098,12 @@ class torchScholar(nn.Module):
 
         # contrastive loss
         if out_1 is not None:
-            s_loss = contrastive_loss(out_1)
-            t_loss = contrastive_loss(out_2)
-            crcd_loss = s_loss + t_loss
-            
+            # feature 
+            s_feature_loss = contrastive_loss(out_1)
+            t_feature_loss = contrastive_loss(out_2)
+            feature_loss = s_feature_loss + t_feature_loss
+
+            crcd_loss = feature_loss 
             loss += self.crcd_weight*crcd_loss
 
         else:
