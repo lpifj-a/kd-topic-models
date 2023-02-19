@@ -395,6 +395,34 @@ def main(call=None):
         default=1.0,
         help="Weight for CRCD",
     )
+    parser.add_argument(
+        "--feature-based-KD",
+        action="store_true",
+        dest="feature_based_KD",
+        default=False,
+        help="Feature based Knowledge Distillation",
+    )
+    parser.add_argument(
+        "--FKD-temp",
+        dest="FKD_temp",
+        default=1,
+        type=float,
+        help="Feature based Knowledge Distillation temperature",
+    )
+    parser.add_argument(
+        "--FKD-weight",
+        dest="FKD_weight",
+        default=0.5,
+        type=float,
+        help="Feature based Knowledge Distillation weight",
+    )
+    parser.add_argument(
+        "--CRD",
+        action="store_true",
+        dest="CRD",
+        default=False,
+        help="Contrastive Relation Distillation",
+    )
     
 
     options = parser.parse_args(call)
@@ -1260,7 +1288,11 @@ def make_network(
         use_interactions=options.interactions,
         teacher_emb_dim=teacher_emb_dim,
         n_data = n_data,
-        crcd_weight = options.crcd_weight
+        crcd_weight = options.crcd_weight,
+        feature_based_KD = options.feature_based_KD,
+        FKD_temp = options.FKD_temp,
+        FKD_weight = options.FKD_weight,
+        CRD = options.CRD
     )
     return network_architecture
 
@@ -1353,13 +1385,14 @@ def train(
         accuracy = 0.0
         avg_nl = 0.0
         avg_kld = 0.0
+        avg_fkd = 0.0
         avg_contrast = 0.0
         # Loop over all batches
         for i in tqdm(range(total_batch)):
             # get a minibatch
             batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast = next(mb_gen)
             # do one minibatch update
-            z, eta, cost, recon_y, thetas, nl, kld, contrast = model.fit(
+            z, eta, cost, recon_y, thetas, nl, kld, fkd, contrast = model.fit(
                 batch_xs,
                 batch_ys,
                 batch_pcs,
@@ -1384,10 +1417,8 @@ def train(
             avg_cost += float(cost) / n_train * batch_size
             avg_nl += float(nl) / n_train * batch_size
             avg_kld += float(kld) / n_train * batch_size
-            if contrast is not None:
-                avg_contrast += float(contrast) / n_train * batch_size
-            else:
-                avg_contrast = 0
+            avg_fkd += float(fkd) / n_train * batch_size
+            avg_contrast += float(contrast) / n_train * batch_size
             batches += 1
             if np.isnan(avg_cost):
                 # print(epoch, i, np.sum(batch_xs, 1).astype(np.int), batch_xs.shape)
@@ -1437,7 +1468,7 @@ def train(
                 )
             else:
                 print("Epoch:", "%d" % epoch, "cost=", "{:.9f}".format(avg_cost))
-                print("nl=","{:.9f}".format(avg_nl), "kld=","{:.9f}".format(avg_kld),"contrast=","{:.9f}".format(avg_contrast))
+                print("nl=","{:.9f}".format(avg_nl), "kld=","{:.9f}".format(avg_kld),"fkd=","{:.9f}".format(avg_fkd),"contrast=","{:.9f}".format(avg_contrast))
                 sys.stdout.flush()
 
             # ある epoch ごとに model を保存
@@ -1451,17 +1482,17 @@ def train(
 
                 # perplexity
                 dev_perplexity = 0.0
-                dev_perplexity = evaluate_perplexity(
-                    model,
-                    X_dev,
-                    Y_dev,
-                    PC_dev,
-                    TC_dev,
-                    DR_dev,
-                    TE_dev_list,
-                    batch_size,
-                    eta_bn_prop=eta_bn_prop,
-                )
+                # dev_perplexity = evaluate_perplexity(
+                #     model,
+                #     X_dev,
+                #     Y_dev,
+                #     PC_dev,
+                #     TC_dev,
+                #     DR_dev,
+                #     TE_dev_list,
+                #     batch_size,
+                #     eta_bn_prop=eta_bn_prop,
+                # )
                 n_dev, _ = X_dev.shape
                 epoch_metrics["perplexity"] = dev_perplexity
 

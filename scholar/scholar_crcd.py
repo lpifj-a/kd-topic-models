@@ -154,15 +154,17 @@ class Scholar(object):
             teacher_emb=teacher_emb,
             teacher_emb_contrast=teacher_emb_contrast,
         )
-        loss, nl, kld, contrast = losses
+        loss, nl, kld, fkd, contrast = losses
         # update model
         loss.backward()
         self.optimizer.step()
 
         if Y_probs is not None:
             Y_probs = Y_probs.to("cpu").detach().numpy()
-        if contrast is not None:
+        if contrast !=0 :
             contrast.to("cpu").detach().numpy()
+        if fkd !=0:
+            fkd.to("cpu").detach().numpy()
         return (
             z.to("cpu").detach().numpy(),
             eta.to("cpu").detach().numpy(),
@@ -171,6 +173,7 @@ class Scholar(object):
             thetas.to("cpu").detach().numpy(),
             nl.to("cpu").detach().numpy(),
             kld.to("cpu").detach().numpy(),
+            fkd,
             contrast,
         )
 
@@ -252,13 +255,13 @@ class Scholar(object):
             _, _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
             )
-            loss, NL, KLD, contrast = temp
+            loss, NL, KLD, fkd, contrast = temp
             losses = loss.to("cpu").detach().numpy()
         else:
             _, _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=1.0, eta_bn_prop=eta_bn_prop
             )
-            loss, NL, KLD, contrast = temp
+            loss, NL, KLD, fkd, contrast = temp
             losses = loss.to("cpu").detach().numpy()
             for s in range(1, n_samples):
                 _, _, _, _, _, temp = self._model(
@@ -272,7 +275,7 @@ class Scholar(object):
                     var_scale=1.0,
                     eta_bn_prop=eta_bn_prop,
                 )
-                loss, NL, KLD, contrast = temp
+                loss, NL, KLD, fkd, contrast = temp
                 losses += loss.to("cpu").detach().numpy()
             losses /= np.float32(n_samples)
 
@@ -496,6 +499,10 @@ class torchScholar(nn.Module):
         self.teacher_emb_dim = config["teacher_emb_dim"]
         self.n_data = config["n_data"]
         self.crcd_weight = config["crcd_weight"]
+        self.feature_based_KD = config["feature_based_KD"]
+        self.FKD_temp = config["FKD_temp"]
+        self.FKD_weight = config["FKD_weight"]
+        self.CRD = config["CRD"]
 
         # create a layer for prior covariates to influence the document prior
         if self.n_prior_covars > 0:
@@ -635,7 +642,7 @@ class torchScholar(nn.Module):
         self.prior_logvar.requires_grad = False
 
         # Contrastive learning
-        if self.teacher_emb_dim is not None:
+        if self.CRD:
             # Relation network
             # 入力はL2正規化された教師，生徒モデルの出力
             self.linear_s = nn.Linear(self.n_topics, 64) # 50, 64
@@ -669,6 +676,11 @@ class torchScholar(nn.Module):
             # Critic function
             self.critic_h1_2 = nn.Linear(128, 256)
             self.critic_h2_2 = nn.Linear(128, 256)
+
+
+        if self.feature_based_KD:
+            self.fkd_linear_s = nn.Linear(self.n_topics, 300)
+            self.fkd_linear_t = nn.Linear(self.teacher_emb_dim, 300)
     
 
     def forward(
@@ -865,20 +877,20 @@ class torchScholar(nn.Module):
 
 
         # Contrastive learning
-        if teacher_emb is not None:
+        if self.CRD:
 
             pos_relation_idx = []
             for k in range(batch_size):
                 pos_relation_idx.append(k*batch_size+k)
 
             # L2 normalization
-            teacher_emb = F.normalize(teacher_emb, p=2, dim=1) 
+            teacher_emb_l2 = F.normalize(teacher_emb, p=2, dim=1) 
             teacher_emb_contrast = F.normalize(teacher_emb_contrast, p=2, dim=1) # weight_v2 (batch_size*501, 1024)
-            z_do = F.normalize(z_do, p=2, dim=1) 
+            z_do_l2 = F.normalize(z_do, p=2, dim=1) 
 
             # linear transformation that can solve the dimension mismatch probrem
-            f_t = self.linear_t(teacher_emb) # anchor_v2  (batch_size, 64)
-            f_s = self.linear_s(z_do) #  batch_size, 64
+            f_t = self.linear_t(teacher_emb_l2) # anchor_v2  (batch_size, 64)
+            f_s = self.linear_s(z_do_l2) #  batch_size, 64
             f_t_contrast = self.linear_t(teacher_emb_contrast) # batch_size*501, 64
             f_t_contrast = f_t_contrast.view(batch_size, 500+1, 64) # batch_size, 501, 64
 
@@ -917,34 +929,39 @@ class torchScholar(nn.Module):
             # (ii) anchor: student model
 
             # anchor-teacher relation: r^{T,S}
-            anchor_teacher_relation = f_t_contrast.unsqueeze(1) - f_s.unsqueeze(1).unsqueeze(0)
-            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
-            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size*501, 64) # 次元を合わせる
-            anchor_teacher_relation = self.sub_net_Mts_2(anchor_teacher_relation)  # batch_size*batch_size*501, 128
+            anchor_teacher_relation_2 = f_t_contrast.unsqueeze(1) - f_s.unsqueeze(1).unsqueeze(0)
+            anchor_teacher_relation_2 = anchor_teacher_relation_2.view(batch_size*batch_size, 501, 64) # batch_size*batch_size, 501, 64
+            anchor_teacher_relation_2 = anchor_teacher_relation_2.view(batch_size*batch_size*501, 64) # 次元を合わせる
+            anchor_teacher_relation_2 = self.sub_net_Mts_2(anchor_teacher_relation_2)  # batch_size*batch_size*501, 128
             
             # linear transformation h1
-            anchor_teacher_relation = self.critic_h1_2(anchor_teacher_relation) # batch_size*batch_size*501, 256
-            anchor_teacher_relation = F.normalize(anchor_teacher_relation, p=2, dim=1)
-            anchor_teacher_relation = anchor_teacher_relation.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
+            anchor_teacher_relation_2 = self.critic_h1_2(anchor_teacher_relation_2) # batch_size*batch_size*501, 256
+            anchor_teacher_relation_2 = F.normalize(anchor_teacher_relation_2, p=2, dim=1)
+            anchor_teacher_relation_2 = anchor_teacher_relation_2.view(batch_size*batch_size, 501, 256)  # 次元を戻す (batch_size*batch_size, 501, 256)
 
             # anchor-student relation: r^{T}
-            anchor_student_relation = f_s.unsqueeze(1) - f_s.unsqueeze(0)
-            anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
-            anchor_student_relation = self.sub_net_Mt_2(anchor_student_relation) # batch_size*batch_size, 128
+            anchor_student_relation_2 = f_s.unsqueeze(1) - f_s.unsqueeze(0)
+            anchor_student_relation_2 = anchor_student_relation_2.view(batch_size*batch_size, 64) # batch_size*batch_size, 64
+            anchor_student_relation_2 = self.sub_net_Mt_2(anchor_student_relation_2) # batch_size*batch_size, 128
 
             # linear transformation h2
-            anchor_student_relation = self.critic_h2_2(anchor_student_relation) # batch_size*batch_size, 256
-            anchor_student_relation = F.normalize(anchor_student_relation, p=2, dim=1)
-            anchor_student_relation = anchor_student_relation.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
+            anchor_student_relation_2 = self.critic_h2_2(anchor_student_relation_2) # batch_size*batch_size, 256
+            anchor_student_relation_2 = F.normalize(anchor_student_relation_2, p=2, dim=1)
+            anchor_student_relation_2 = anchor_student_relation_2.view(batch_size*batch_size, 256, 1) # batch_size*batch_size, 256, 1
 
             # critic function
-            out_2 = torch.bmm(anchor_teacher_relation, anchor_student_relation)
+            out_2 = torch.bmm(anchor_teacher_relation_2, anchor_student_relation_2)
             out_2 = torch.exp(torch.div(out_2, 0.05))
             out_2 = torch.div(out_2,math.exp(1/0.05))
 
         else:
             out_1 = None
             out_2 = None
+
+
+        if self.feature_based_KD:
+            fkd_teacher_emb= self.fkd_linear_t(teacher_emb) 
+            fkd_student_z = self.fkd_linear_s(z_do)
 
 
         if compute_loss:
@@ -971,7 +988,9 @@ class torchScholar(nn.Module):
                     l1_beta_c,
                     l1_beta_ci,
                     out_1,
-                    out_2
+                    out_2,
+                    fkd_teacher_emb,
+                    fkd_student_z
                 ),
             )
         else:
@@ -996,41 +1015,50 @@ class torchScholar(nn.Module):
         l1_beta_c=None,
         l1_beta_ci=None,
         out_1=None,
-        out_2=None
+        out_2=None,
+        fkd_teacher_emb=None,
+        fkd_student_z=None,
     ):
 
-        NL = 0.
+        loss = 0.
         # compute bag-of-words reconstruction loss
         if self.reconstruct_bow:
-            NL += -(X * (X_recon + 1e-10).log()).sum(1)
-            reconstruction_loss = NL
+            reconstruction_loss = -(X * (X_recon + 1e-10).log()).sum(1)
 
-        # knowledge distillation
-        if X_soft_recon_list :
-            alpha_list = self.doc_reconstruction_weight_list
-            t_list = self.doc_reconstruction_temp_list
+            if self.feature_based_KD and self.CRD:
+                reconstruction_loss = reconstruction_loss*(1-self.FKD_weight-self.crcd_weight)
+            elif self.feature_based_KD:
+                reconstruction_loss = reconstruction_loss*(1-self.FKD_weight) 
+            elif self.CRD:
+                reconstruction_loss= reconstruction_loss*(1-self.crcd_weight) 
+            loss += reconstruction_loss
+
+        # # knowledge distillation
+        # if X_soft_recon_list :
+        #     alpha_list = self.doc_reconstruction_weight_list
+        #     t_list = self.doc_reconstruction_temp_list
             
-            # Using BERT-based Autoencoder as the Teacher model (BAT)
-            if DR is not None:
-                X_soft = torch.softmax(DR / t_list[0], dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
-                X_soft = X_soft * (X_soft > self.doc_reconstruction_min_count).float()
-                kd_loss = (alpha_list[0] * t_list[0] * t_list[0]) * -(X_soft * (X_soft_recon_list[0] + 1e-10).log()).sum(1)
+        #     # Using BERT-based Autoencoder as the Teacher model (BAT)
+        #     if DR is not None:
+        #         X_soft = torch.softmax(DR / t_list[0], dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+        #         X_soft = X_soft * (X_soft > self.doc_reconstruction_min_count).float()
+        #         kd_loss = (alpha_list[0] * t_list[0] * t_list[0]) * -(X_soft * (X_soft_recon_list[0] + 1e-10).log()).sum(1)
 
-            # Using the pretrained eta as the Teacher model
-            elif TE_list :
-                kd_loss = 0
-                for (TE, t, alpha, X_soft_recon) in zip(TE_list, t_list, alpha_list, X_soft_recon_list):
-                    X_soft = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
-                    kd_loss += (alpha * t * t) * -(X_soft * (X_soft_recon + 1e-10).log()).sum(1)
+        #     # Using the pretrained eta as the Teacher model
+        #     elif TE_list :
+        #         kd_loss = 0
+        #         for (TE, t, alpha, X_soft_recon) in zip(TE_list, t_list, alpha_list, X_soft_recon_list):
+        #             X_soft = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+        #             kd_loss += (alpha * t * t) * -(X_soft * (X_soft_recon + 1e-10).log()).sum(1)
 
-            standard_loss = (1 - sum(alpha_list)) * -(X * (X_recon + 1e-10).log()).sum(1) # reconstruction loss
+        #     standard_loss = (1 - sum(alpha_list)) * -(X * (X_recon + 1e-10).log()).sum(1) # reconstruction loss
 
-            # overwrite the NL loss (more of a safeguard than anything)
-            NL = kd_loss + standard_loss
+        #     # overwrite the NL loss (more of a safeguard than anything)
+        #     NL = kd_loss + standard_loss
 
-        # compute label loss
-        if self.n_labels > 0:
-            NL += -(Y * (Y_recon + 1e-10).log()).sum(1) * self.classifier_loss_weight
+        # # compute label loss
+        # if self.n_labels > 0:
+        #     NL += -(Y * (Y_recon + 1e-10).log()).sum(1) * self.classifier_loss_weight
         
         # compute KLD
         prior_var = prior_logvar.exp()
@@ -1046,36 +1074,49 @@ class torchScholar(nn.Module):
         )
 
         # combine
-        loss = NL + KLD
+        loss +=  KLD
 
-        # add regularization on prior
-        if self.l2_prior_reg > 0 and self.n_prior_covars > 0:
-            loss += (
-                self.l2_prior_reg * torch.pow(self.prior_covar_weights.weight, 2).sum()
-            )
+        # # add regularization on prior
+        # if self.l2_prior_reg > 0 and self.n_prior_covars > 0:
+        #     loss += (
+        #         self.l2_prior_reg * torch.pow(self.prior_covar_weights.weight, 2).sum()
+        #     )
 
-        # add regularization on topic and topic covariate weights
-        if self.l1_beta_reg > 0 and l1_beta is not None:
-            l1_strengths_beta = torch.from_numpy(l1_beta).to(self.device)
-            beta_weights_sq = torch.pow(self.beta_layer.weight, 2)
-            loss += self.l1_beta_reg * (l1_strengths_beta * beta_weights_sq).sum()
+        # # add regularization on topic and topic covariate weights
+        # if self.l1_beta_reg > 0 and l1_beta is not None:
+        #     l1_strengths_beta = torch.from_numpy(l1_beta).to(self.device)
+        #     beta_weights_sq = torch.pow(self.beta_layer.weight, 2)
+        #     loss += self.l1_beta_reg * (l1_strengths_beta * beta_weights_sq).sum()
 
-        if self.n_topic_covars > 0 and l1_beta_c is not None and self.l1_beta_c_reg > 0:
-            l1_strengths_beta_c = torch.from_numpy(l1_beta_c).to(self.device)
-            beta_c_weights_sq = torch.pow(self.beta_c_layer.weight, 2)
-            loss += self.l1_beta_c_reg * (l1_strengths_beta_c * beta_c_weights_sq).sum()
+        # if self.n_topic_covars > 0 and l1_beta_c is not None and self.l1_beta_c_reg > 0:
+        #     l1_strengths_beta_c = torch.from_numpy(l1_beta_c).to(self.device)
+        #     beta_c_weights_sq = torch.pow(self.beta_c_layer.weight, 2)
+        #     loss += self.l1_beta_c_reg * (l1_strengths_beta_c * beta_c_weights_sq).sum()
 
-        if (
-            self.n_topic_covars > 0
-            and self.use_interactions
-            and l1_beta_c is not None
-            and self.l1_beta_ci_reg > 0
-        ):
-            l1_strengths_beta_ci = torch.from_numpy(l1_beta_ci).to(self.device)
-            beta_ci_weights_sq = torch.pow(self.beta_ci_layer.weight, 2)
-            loss += (
-                self.l1_beta_ci_reg * (l1_strengths_beta_ci * beta_ci_weights_sq).sum()
-            )
+        # if (
+        #     self.n_topic_covars > 0
+        #     and self.use_interactions
+        #     and l1_beta_c is not None
+        #     and self.l1_beta_ci_reg > 0
+        # ):
+        #     l1_strengths_beta_ci = torch.from_numpy(l1_beta_ci).to(self.device)
+        #     beta_ci_weights_sq = torch.pow(self.beta_ci_layer.weight, 2)
+        #     loss += (
+        #         self.l1_beta_ci_reg * (l1_strengths_beta_ci * beta_ci_weights_sq).sum()
+        #     )
+
+        # Feature based Knowledge Distillation
+        if self.feature_based_KD:
+            FKD_t = self.FKD_temp
+            FKD_weight = self.FKD_weight
+
+            student_z = F.softmax(fkd_student_z / FKD_t, dim=1) 
+            teacher_emb = F.softmax(fkd_teacher_emb / FKD_t, dim=1) 
+            fkd_loss = (FKD_weight * FKD_t * FKD_t) * -(teacher_emb* (student_z + 1e-10).log()).sum(1)
+
+            loss += fkd_loss
+        else:
+            fkd_loss=0
 
 
         def contrastive_loss(x):
@@ -1107,18 +1148,14 @@ class torchScholar(nn.Module):
             loss += self.crcd_weight*crcd_loss
 
         else:
-            crcd_loss = None
-        
+            crcd_loss = 0
 
 
         # average losses if desired
         if do_average:
-            if crcd_loss is not None:
-                return loss.mean(), NL.mean(), KLD.mean(), crcd_loss
-            else:
-                return loss.mean(), NL.mean(), KLD.mean(), None
+            return loss.mean(), reconstruction_loss.mean(), KLD.mean(),fkd_loss.mean(), crcd_loss
         else:
-            return loss, NL, KLD, crcd_loss
+            return loss, reconstruction_loss, KLD, fkd_loss, crcd_loss
 
     def predict_from_theta(self, theta, PC, TC, DR, TE_list):
         # Predict labels from a distribution over topics
