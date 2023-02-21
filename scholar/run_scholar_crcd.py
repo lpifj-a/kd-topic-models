@@ -390,10 +390,10 @@ def main(call=None):
         help="Teacher embedding file",
     )
     parser.add_argument(
-        "--crcd-weight",
+        "--RCD-weight",
         type=float,
         default=1.0,
-        help="Weight for CRCD",
+        help="Weight for RCD",
     )
     parser.add_argument(
         "--feature-based-KD",
@@ -417,9 +417,9 @@ def main(call=None):
         help="Feature based Knowledge Distillation weight",
     )
     parser.add_argument(
-        "--CRD",
+        "--RCD",
         action="store_true",
-        dest="CRD",
+        dest="RCD",
         default=False,
         help="Contrastive Relation Distillation",
     )
@@ -1288,11 +1288,11 @@ def make_network(
         use_interactions=options.interactions,
         teacher_emb_dim=teacher_emb_dim,
         n_data = n_data,
-        crcd_weight = options.crcd_weight,
+        RCD_weight = options.RCD_weight,
         feature_based_KD = options.feature_based_KD,
         FKD_temp = options.FKD_temp,
         FKD_weight = options.FKD_weight,
-        CRD = options.CRD
+        RCD = options.RCD
     )
     return network_architecture
 
@@ -1482,17 +1482,17 @@ def train(
 
                 # perplexity
                 dev_perplexity = 0.0
-                # dev_perplexity = evaluate_perplexity(
-                #     model,
-                #     X_dev,
-                #     Y_dev,
-                #     PC_dev,
-                #     TC_dev,
-                #     DR_dev,
-                #     TE_dev_list,
-                #     batch_size,
-                #     eta_bn_prop=eta_bn_prop,
-                # )
+                dev_perplexity = evaluate_perplexity(
+                    model,
+                    X_dev,
+                    Y_dev,
+                    PC_dev,
+                    TC_dev,
+                    DR_dev,
+                    TE_dev_list,
+                    batch_size,
+                    eta_bn_prop=eta_bn_prop,
+                )
                 n_dev, _ = X_dev.shape
                 epoch_metrics["perplexity"] = dev_perplexity
 

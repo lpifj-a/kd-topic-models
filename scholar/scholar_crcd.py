@@ -498,11 +498,11 @@ class torchScholar(nn.Module):
         self.classify_from_doc_reps = classify_from_doc_reps
         self.teacher_emb_dim = config["teacher_emb_dim"]
         self.n_data = config["n_data"]
-        self.crcd_weight = config["crcd_weight"]
+        self.RCD_weight = config["RCD_weight"]
         self.feature_based_KD = config["feature_based_KD"]
         self.FKD_temp = config["FKD_temp"]
         self.FKD_weight = config["FKD_weight"]
-        self.CRD = config["CRD"]
+        self.RCD = config["RCD"]
 
         # create a layer for prior covariates to influence the document prior
         if self.n_prior_covars > 0:
@@ -642,7 +642,7 @@ class torchScholar(nn.Module):
         self.prior_logvar.requires_grad = False
 
         # Contrastive learning
-        if self.CRD:
+        if self.RCD:
             # Relation network
             # 入力はL2正規化された教師，生徒モデルの出力
             self.linear_s = nn.Linear(self.n_topics, 64) # 50, 64
@@ -877,7 +877,7 @@ class torchScholar(nn.Module):
 
 
         # Contrastive learning
-        if self.CRD:
+        if self.RCD and teacher_emb is not None:
 
             pos_relation_idx = []
             for k in range(batch_size):
@@ -959,9 +959,12 @@ class torchScholar(nn.Module):
             out_2 = None
 
 
-        if self.feature_based_KD:
-            fkd_teacher_emb= self.fkd_linear_t(teacher_emb) 
-            fkd_student_z = self.fkd_linear_s(z_do)
+        if self.feature_based_KD and teacher_emb is not None:
+            fkd_teacher_emb= teacher_emb
+            fkd_student_z = z_do
+        else:
+            fkd_teacher_emb = None
+            fkd_student_z = None
 
 
         if compute_loss:
@@ -1025,12 +1028,12 @@ class torchScholar(nn.Module):
         if self.reconstruct_bow:
             reconstruction_loss = -(X * (X_recon + 1e-10).log()).sum(1)
 
-            if self.feature_based_KD and self.CRD:
-                reconstruction_loss = reconstruction_loss*(1-self.FKD_weight-self.crcd_weight)
+            if self.feature_based_KD and self.RCD:
+                reconstruction_loss = reconstruction_loss*(1-self.FKD_weight-self.RCD_weight)
             elif self.feature_based_KD:
                 reconstruction_loss = reconstruction_loss*(1-self.FKD_weight) 
-            elif self.CRD:
-                reconstruction_loss= reconstruction_loss*(1-self.crcd_weight) 
+            elif self.RCD:
+                reconstruction_loss= reconstruction_loss*(1-self.RCD_weight) 
             loss += reconstruction_loss
 
         # # knowledge distillation
@@ -1106,13 +1109,16 @@ class torchScholar(nn.Module):
         #     )
 
         # Feature based Knowledge Distillation
-        if self.feature_based_KD:
+        if fkd_teacher_emb is not None:
             FKD_t = self.FKD_temp
             FKD_weight = self.FKD_weight
 
-            student_z = F.softmax(fkd_student_z / FKD_t, dim=1) 
-            teacher_emb = F.softmax(fkd_teacher_emb / FKD_t, dim=1) 
-            fkd_loss = (FKD_weight * FKD_t * FKD_t) * -(teacher_emb* (student_z + 1e-10).log()).sum(1)
+            mse = nn.MSELoss()
+            batch_size = X.shape[0]
+            fkd_loss = self.FKD_weight * mse(fkd_student_z,fkd_teacher_emb)
+            # student_z = F.softmax(fkd_student_z / FKD_t, dim=1) 
+            # teacher_emb = F.softmax(fkd_teacher_emb / FKD_t, dim=1) 
+            # fkd_loss = (FKD_weight * FKD_t * FKD_t) * -(teacher_emb* (student_z + 1e-10).log()).sum(1)
 
             loss += fkd_loss
         else:
@@ -1132,10 +1138,10 @@ class torchScholar(nn.Module):
             P_neg = x.narrow(1, 1, m)
             log_N = torch.log(1-P_neg+eps) 
             
-            crcd_loss = - (log_P.sum(0) + log_N.view(-1, 1).sum(0))/bsz
-            crcd_loss = crcd_loss[0]
+            rcd_loss = - (log_P.sum(0) + log_N.view(-1, 1).sum(0))/bsz
+            rcd_loss = rcd_loss[0]
 
-            return crcd_loss
+            return rcd_loss
 
         # contrastive loss
         if out_1 is not None:
@@ -1144,18 +1150,21 @@ class torchScholar(nn.Module):
             t_feature_loss = contrastive_loss(out_2)
             feature_loss = s_feature_loss + t_feature_loss
 
-            crcd_loss = feature_loss 
-            loss += self.crcd_weight*crcd_loss
+            rcd_loss = feature_loss 
+            loss += self.RCD_weight*rcd_loss
 
         else:
-            crcd_loss = 0
+            rcd_loss = 0
 
 
         # average losses if desired
         if do_average:
-            return loss.mean(), reconstruction_loss.mean(), KLD.mean(),fkd_loss.mean(), crcd_loss
+            if fkd_loss != 0:
+                return loss.mean(), reconstruction_loss.mean(), KLD.mean(),fkd_loss.mean(), rcd_loss
+            else:
+                return loss.mean(), reconstruction_loss.mean(), KLD.mean(),fkd_loss, rcd_loss
         else:
-            return loss, reconstruction_loss, KLD, fkd_loss, crcd_loss
+            return loss, reconstruction_loss, KLD, fkd_loss, rcd_loss
 
     def predict_from_theta(self, theta, PC, TC, DR, TE_list):
         # Predict labels from a distribution over topics
