@@ -154,17 +154,20 @@ class Scholar(object):
             teacher_emb=teacher_emb,
             teacher_emb_contrast=teacher_emb_contrast,
         )
-        loss, nl, kld, fkd, contrast = losses
+        loss, nl, kld, reskd, fkd, contrast = losses
         # update model
         loss.backward()
         self.optimizer.step()
 
         if Y_probs is not None:
             Y_probs = Y_probs.to("cpu").detach().numpy()
-        if contrast !=0 :
+        if contrast !=0:
             contrast.to("cpu").detach().numpy()
         if fkd !=0:
             fkd.to("cpu").detach().numpy()
+        if reskd !=0:
+            reskd.to("cpu").detach().numpy()
+
         return (
             z.to("cpu").detach().numpy(),
             eta.to("cpu").detach().numpy(),
@@ -173,6 +176,7 @@ class Scholar(object):
             thetas.to("cpu").detach().numpy(),
             nl.to("cpu").detach().numpy(),
             kld.to("cpu").detach().numpy(),
+            reskd,
             fkd,
             contrast,
         )
@@ -255,13 +259,13 @@ class Scholar(object):
             _, _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=0.0, eta_bn_prop=eta_bn_prop
             )
-            loss, NL, KLD, fkd, contrast = temp
+            loss, NL, KLD, reskd, fkd, contrast = temp
             losses = loss.to("cpu").detach().numpy()
         else:
             _, _, _, _, _, temp = self._model(
                 X, Y, PC, TC, DR, TE_list, do_average=False, var_scale=1.0, eta_bn_prop=eta_bn_prop
             )
-            loss, NL, KLD, fkd, contrast = temp
+            loss, NL, KLD, reskd, fkd, contrast = temp
             losses = loss.to("cpu").detach().numpy()
             for s in range(1, n_samples):
                 _, _, _, _, _, temp = self._model(
@@ -275,7 +279,7 @@ class Scholar(object):
                     var_scale=1.0,
                     eta_bn_prop=eta_bn_prop,
                 )
-                loss, NL, KLD, fkd, contrast = temp
+                loss, NL, KLD, reskd, fkd, contrast = temp
                 losses += loss.to("cpu").detach().numpy()
             losses /= np.float32(n_samples)
 
@@ -1023,41 +1027,43 @@ class torchScholar(nn.Module):
         fkd_student_z=None,
     ):
 
-        loss = 0.
+        batch_size = X.shape[0]
+        loss = 0.0
+        if self.doc_reconstruction_weight_list is not None:
+            ResKD_weight = self.doc_reconstruction_weight_list[0]
+        else:
+            ResKD_weight=0.0
+
         # compute bag-of-words reconstruction loss
         if self.reconstruct_bow:
             reconstruction_loss = -(X * (X_recon + 1e-10).log()).sum(1)
-
-            if self.feature_based_KD and self.RCD:
-                reconstruction_loss = reconstruction_loss*(1-self.FKD_weight-self.RCD_weight)
-            elif self.feature_based_KD:
-                reconstruction_loss = reconstruction_loss*(1-self.FKD_weight) 
-            elif self.RCD:
-                reconstruction_loss= reconstruction_loss*(1-self.RCD_weight) 
-            loss += reconstruction_loss
-
-        # # knowledge distillation
-        # if X_soft_recon_list :
-        #     alpha_list = self.doc_reconstruction_weight_list
-        #     t_list = self.doc_reconstruction_temp_list
+            reconstruction_loss = reconstruction_loss*(1-ResKD_weight-self.FKD_weight-self.RCD_weight)
             
-        #     # Using BERT-based Autoencoder as the Teacher model (BAT)
-        #     if DR is not None:
-        #         X_soft = torch.softmax(DR / t_list[0], dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
-        #         X_soft = X_soft * (X_soft > self.doc_reconstruction_min_count).float()
-        #         kd_loss = (alpha_list[0] * t_list[0] * t_list[0]) * -(X_soft * (X_soft_recon_list[0] + 1e-10).log()).sum(1)
+            loss += reconstruction_loss
+            
 
-        #     # Using the pretrained eta as the Teacher model
-        #     elif TE_list :
-        #         kd_loss = 0
-        #         for (TE, t, alpha, X_soft_recon) in zip(TE_list, t_list, alpha_list, X_soft_recon_list):
-        #             X_soft = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
-        #             kd_loss += (alpha * t * t) * -(X_soft * (X_soft_recon + 1e-10).log()).sum(1)
+        # knowledge distillation
+        if X_soft_recon_list :
+            alpha_list = self.doc_reconstruction_weight_list
+            t_list = self.doc_reconstruction_temp_list
+            
+            # Using BERT-based Autoencoder as the Teacher model (BAT)
+            if DR is not None:
+                X_soft = torch.softmax(DR / t_list[0], dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+                X_soft = X_soft * (X_soft > self.doc_reconstruction_min_count).float()
+                kd_loss = (alpha_list[0] * t_list[0] * t_list[0]) * -(X_soft * (X_soft_recon_list[0] + 1e-10).log()).sum(1)
 
-        #     standard_loss = (1 - sum(alpha_list)) * -(X * (X_recon + 1e-10).log()).sum(1) # reconstruction loss
+            # Using the pretrained eta as the Teacher model
+            elif TE_list :
+                reskd_loss = 0
+                for (TE, t, alpha, X_soft_recon) in zip(TE_list, t_list, alpha_list, X_soft_recon_list):
+                    X_soft = torch.softmax(TE / t, dim=-1) * X.sum(1, keepdim=True) # multiply probabilities by counts
+                    reskd_loss += (alpha * t * t) * -(X_soft * (X_soft_recon + 1e-10).log()).sum(1)
 
-        #     # overwrite the NL loss (more of a safeguard than anything)
-        #     NL = kd_loss + standard_loss
+            loss += reskd_loss
+        else:
+            reskd_loss = 0.0
+        
 
         # # compute label loss
         # if self.n_labels > 0:
@@ -1110,15 +1116,12 @@ class torchScholar(nn.Module):
 
         # Feature based Knowledge Distillation
         if fkd_teacher_emb is not None:
-            FKD_t = self.FKD_temp
-            FKD_weight = self.FKD_weight
-
             mse = nn.MSELoss()
-            batch_size = X.shape[0]
             fkd_loss = self.FKD_weight * mse(fkd_student_z,fkd_teacher_emb)
+            # FKD_t = self.FKD_temp
             # student_z = F.softmax(fkd_student_z / FKD_t, dim=1) 
             # teacher_emb = F.softmax(fkd_teacher_emb / FKD_t, dim=1) 
-            # fkd_loss = (FKD_weight * FKD_t * FKD_t) * -(teacher_emb* (student_z + 1e-10).log()).sum(1)
+            # fkd_loss = (self.FKD_weight * FKD_t * FKD_t) * -(teacher_emb* (student_z + 1e-10).log()).sum(1)
 
             loss += fkd_loss
         else:
@@ -1150,21 +1153,19 @@ class torchScholar(nn.Module):
             t_feature_loss = contrastive_loss(out_2)
             feature_loss = s_feature_loss + t_feature_loss
 
-            rcd_loss = feature_loss 
-            loss += self.RCD_weight*rcd_loss
+            rcd_loss = self.RCD_weight*feature_loss
+            loss += rcd_loss
 
         else:
             rcd_loss = 0
 
-
         # average losses if desired
         if do_average:
-            if fkd_loss != 0:
-                return loss.mean(), reconstruction_loss.mean(), KLD.mean(),fkd_loss.mean(), rcd_loss
-            else:
-                return loss.mean(), reconstruction_loss.mean(), KLD.mean(),fkd_loss, rcd_loss
+            if type(reskd_loss) != int:
+                reskd_loss = reskd_loss.mean()
+            return loss.mean(), reconstruction_loss.mean(), KLD.mean(), reskd_loss, fkd_loss, rcd_loss
         else:
-            return loss, reconstruction_loss, KLD, fkd_loss, rcd_loss
+            return loss, reconstruction_loss, KLD, reskd_loss, fkd_loss*batch_size, rcd_loss*batch_size
 
     def predict_from_theta(self, theta, PC, TC, DR, TE_list):
         # Predict labels from a distribution over topics

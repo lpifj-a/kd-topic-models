@@ -392,7 +392,7 @@ def main(call=None):
     parser.add_argument(
         "--RCD-weight",
         type=float,
-        default=1.0,
+        default=0.0,
         help="Weight for RCD",
     )
     parser.add_argument(
@@ -412,7 +412,7 @@ def main(call=None):
     parser.add_argument(
         "--FKD-weight",
         dest="FKD_weight",
-        default=0.5,
+        default=0.0,
         type=float,
         help="Feature based Knowledge Distillation weight",
     )
@@ -1385,6 +1385,7 @@ def train(
         accuracy = 0.0
         avg_nl = 0.0
         avg_kld = 0.0
+        avg_reskd = 0.0
         avg_fkd = 0.0
         avg_contrast = 0.0
         # Loop over all batches
@@ -1392,7 +1393,7 @@ def train(
             # get a minibatch
             batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast = next(mb_gen)
             # do one minibatch update
-            z, eta, cost, recon_y, thetas, nl, kld, fkd, contrast = model.fit(
+            z, eta, cost, recon_y, thetas, nl, kld, reskd, fkd, contrast = model.fit(
                 batch_xs,
                 batch_ys,
                 batch_pcs,
@@ -1417,6 +1418,7 @@ def train(
             avg_cost += float(cost) / n_train * batch_size
             avg_nl += float(nl) / n_train * batch_size
             avg_kld += float(kld) / n_train * batch_size
+            avg_reskd += float(reskd) / n_train * batch_size
             avg_fkd += float(fkd) / n_train * batch_size
             avg_contrast += float(contrast) / n_train * batch_size
             batches += 1
@@ -1468,7 +1470,7 @@ def train(
                 )
             else:
                 print("Epoch:", "%d" % epoch, "cost=", "{:.9f}".format(avg_cost))
-                print("nl=","{:.9f}".format(avg_nl), "kld=","{:.9f}".format(avg_kld),"fkd=","{:.9f}".format(avg_fkd),"contrast=","{:.9f}".format(avg_contrast))
+                print("RE=","{:.9f}".format(avg_nl), "KLD=","{:.9f}".format(avg_kld),"ResKD=","{:.9f}".format(avg_reskd),"FeaKD=","{:.9f}".format(avg_fkd),"RCD=","{:.9f}".format(avg_contrast))
                 sys.stdout.flush()
 
             # ある epoch ごとに model を保存
