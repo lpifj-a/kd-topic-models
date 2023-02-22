@@ -1062,7 +1062,7 @@ class torchScholar(nn.Module):
 
             loss += reskd_loss
         else:
-            reskd_loss = 0.0
+            reskd_loss = 0
         
 
         # # compute label loss
@@ -1169,7 +1169,7 @@ class torchScholar(nn.Module):
 
     def predict_from_theta(self, theta, PC, TC, DR, TE_list):
         # Predict labels from a distribution over topics
-        Y_recon = None
+        Y_recon = Noneß
         if self.n_labels > 0:
 
             classifier_inputs = []
