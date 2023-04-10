@@ -1484,18 +1484,18 @@ def train(
 
                 # perplexity
                 dev_perplexity = 0.0
-                dev_perplexity = evaluate_perplexity(
-                    model,
-                    X_dev,
-                    Y_dev,
-                    PC_dev,
-                    TC_dev,
-                    DR_dev,
-                    TE_dev_list,
-                    batch_size,
-                    eta_bn_prop=eta_bn_prop,
-                )
-                n_dev, _ = X_dev.shape
+                # dev_perplexity = evaluate_perplexity(
+                #     model,
+                #     X_dev,
+                #     Y_dev,
+                #     PC_dev,
+                #     TC_dev,
+                #     DR_dev,
+                #     TE_dev_list,
+                #     batch_size,
+                #     eta_bn_prop=eta_bn_prop,
+                # )
+                # n_dev, _ = X_dev.shape
                 epoch_metrics["perplexity"] = dev_perplexity
 
                 # accuracy

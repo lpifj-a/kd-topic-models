@@ -1037,7 +1037,7 @@ class torchScholar(nn.Module):
         # compute bag-of-words reconstruction loss
         if self.reconstruct_bow:
             reconstruction_loss = -(X * (X_recon + 1e-10).log()).sum(1)
-            reconstruction_loss = reconstruction_loss*(1-ResKD_weight-self.FKD_weight-self.RCD_weight)
+            reconstruction_loss = reconstruction_loss*(1-ResKD_weight)
             
             loss += reconstruction_loss
             
