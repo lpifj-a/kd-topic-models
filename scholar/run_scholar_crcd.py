@@ -1389,7 +1389,8 @@ def train(
         avg_fkd = 0.0
         avg_contrast = 0.0
         # Loop over all batches
-        for i in tqdm(range(total_batch)):
+        # for i in tqdm(range(total_batch)):
+        for i in range(total_batch):   
             # get a minibatch
             batch_xs, batch_ys, batch_pcs, batch_tcs, batch_drs, batch_tes, batch_teacher_emb, batch_teacher_emb_contrast = next(mb_gen)
             # do one minibatch update
@@ -1469,9 +1470,11 @@ def train(
                     "{:.9f}".format(accuracy),
                 )
             else:
-                print("Epoch:", "%d" % epoch, "cost=", "{:.9f}".format(avg_cost))
-                print("RE=","{:.9f}".format(avg_nl), "KLD=","{:.9f}".format(avg_kld),"ResKD=","{:.9f}".format(avg_reskd),"FeaKD=","{:.9f}".format(avg_fkd),"RCD=","{:.9f}".format(avg_contrast))
-                sys.stdout.flush()
+                if epoch%10==0:
+                    print("")
+                    print("Epoch:", "%d" % epoch, "cost=", "{:.9f}".format(avg_cost))
+                    print("RE=","{:.9f}".format(avg_nl), "KLD=","{:.9f}".format(avg_kld),"ResKD=","{:.9f}".format(avg_reskd),"FeaKD=","{:.9f}".format(avg_fkd),"RCD=","{:.9f}".format(avg_contrast))
+                    sys.stdout.flush()
 
             # ある epoch ごとに model を保存
             if options.save_for_each_epoch is not None :
@@ -1520,13 +1523,14 @@ def train(
                 topic_diversity = get_topic_diversity(model.get_weights(), 25)
                 # epoch_metrics["topic_diversity"] = topic_diversity
 
-                print(
-                    f"Dev perplexity = {dev_perplexity:0.4f}; "
-                    f"Dev accuracy = {dev_accuracy:0.4f}; "
-                    f"Dev NPMI = {dev_npmi:0.4f}; "
-                    f"Topic diversity = {topic_diversity:0.4f}; "
-                )
-                sys.stdout.flush()
+                if epoch%10==0:
+                    print(
+                        f"Dev perplexity = {dev_perplexity:0.4f}; "
+                        f"Dev accuracy = {dev_accuracy:0.4f}; "
+                        f"Dev NPMI = {dev_npmi:0.4f}; "
+                        f"Topic diversity = {topic_diversity:0.4f}; "
+                    )
+                    sys.stdout.flush()
 
                 best_dev_metrics = update_metrics(epoch_metrics, best_dev_metrics, epoch)
                 if best_dev_metrics[dev_metric]["epoch"] == epoch:
