@@ -1086,7 +1086,7 @@ def objective(
             doc_reconstruction_weight_list.append(trial.suggest_uniform("ResKD_weight",0.1,0.99))
             doc_reconstruction_temp_list.append(trial.suggest_uniform("softmax_temp",1,3))
         RCD_weight = trial.suggest_uniform("RCD_weight",1,100)
-        FKD_weight = trial.suggest_uniform("RCD_weight",1,100)
+        FKD_weight = trial.suggest_uniform("FeaKD_weight",1,100)
 
         model = Scholar(
             network_architecture,
