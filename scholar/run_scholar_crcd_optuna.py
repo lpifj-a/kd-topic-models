@@ -1672,7 +1672,8 @@ def train(
                     os.makedirs(options.output_dir+"/npmi_for_each_topic", exist_ok=True)
                     dt_now = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S{}').format('')
                     best_npmi_for_each_topic.to_csv(options.output_dir+"/npmi_for_each_topic/"+dt_now + ".csv", header=False)
-                    return model
+                    # 返り値をmodelからnpmiの最高値に変更
+                    return best_dev_metrics[dev_metric]["value"]
                 # switch back to training mode
                 model.train()
 
